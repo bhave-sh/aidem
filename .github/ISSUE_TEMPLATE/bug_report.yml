@@ -1,0 +1,41 @@
+name: Bug report
+description: Report a bug or unexpected behavior
+labels: [bug]
+body:
+  - type: input
+    attributes:
+      label: aidem version
+      placeholder: "0.1.0"
+    validations:
+      required: true
+  - type: input
+    attributes:
+      label: Python version
+      placeholder: "3.12"
+    validations:
+      required: true
+  - type: input
+    attributes:
+      label: OS
+      placeholder: "macOS 15, Ubuntu 24.04, Windows 11"
+    validations:
+      required: true
+  - type: textarea
+    attributes:
+      label: Steps to reproduce
+      placeholder: |
+        1. Run `aidem ...`
+        2. See error
+    validations:
+      required: true
+  - type: textarea
+    attributes:
+      label: Expected behavior
+    validations:
+      required: true
+  - type: textarea
+    attributes:
+      label: Actual behavior
+      placeholder: Paste the full error output
+    validations:
+      required: true
