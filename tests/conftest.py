@@ -34,8 +34,7 @@ def fake_dirs(tmp_path, monkeypatch):
     return {
         "data": data,
         "home": home,
-        "skills": data / "skills",
-        "cursor_skills": data / "cursor_skills",
+        "skills": data / "skill",
         "registry": data / "registry",
         "manifest": data / "registry" / "manifest.json",
     }

@@ -5,17 +5,23 @@ aidem distinguishes two kinds of paths:
 - **Package paths** (shipped, read-only, live next to the installed CLI):
   generators, overlays, the canonical AGENTS.md template.
 - **Data paths** (user-writable, persistent, survive upgrades): the shared
-  skills library, the Cursor transformed mirror, the registry manifest and
-  its git submodules.
+  content libraries (skills, rules, mcp, memory, plans), the registry
+  manifest and its git submodules.
 
 By default the data dir is `~/.aidem`. Override with the `AIDEM_DATA_DIR`
 environment variable (used by tests to keep the home directory pristine).
+
+Content kind directories follow the pattern `~/.aidem/<kind>/` (e.g.
+`~/.aidem/skills/`, `~/.aidem/rules/`).
 """
 
 import os
 from pathlib import Path
 
 PACKAGE_ROOT = Path(__file__).resolve().parent
+
+# Kinds of content aidem manages.
+REGISTRY_KINDS = ("skill", "rule", "mcp", "memory", "plan")
 
 
 def data_dir() -> Path:
@@ -36,14 +42,30 @@ def config_dir() -> Path:
     return PACKAGE_ROOT / "config"
 
 
+def kind_dir(kind: str) -> Path:
+    """Content library directory for a given kind (e.g. 'skill' -> ~/.aidem/skill)."""
+    return data_dir() / kind
+
+
 def skills_dir() -> Path:
     """User-writable shared skill library."""
-    return data_dir() / "skills"
+    return kind_dir("skill")
 
 
-def cursor_skills_dir() -> Path:
-    """User-writable Cursor transformed mirror."""
-    return data_dir() / "cursor_skills"
+def rules_dir() -> Path:
+    return kind_dir("rule")
+
+
+def mcp_dir() -> Path:
+    return kind_dir("mcp")
+
+
+def memory_dir() -> Path:
+    return kind_dir("memory")
+
+
+def plans_dir() -> Path:
+    return kind_dir("plan")
 
 
 def registry_dir() -> Path:

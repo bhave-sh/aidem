@@ -27,6 +27,8 @@ from aidem_paths import (
     registry_dir,
     manifest_path,
     skills_dir as user_skills_dir,
+    kind_dir,
+    REGISTRY_KINDS,
     overlays_dir,
     canonical_agents,
     ensure_data_dirs,
@@ -50,6 +52,17 @@ RUNTIME_MARKERS = {
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
+
+
+def _validate_name(name: str) -> str:
+    """Reject registry names that could escape the data directory."""
+    if not name:
+        raise click.BadParameter("name must not be empty")
+    if ".." in name or "/" in name or "\\" in name:
+        raise click.BadParameter(
+            "name must not contain path separators or '..'"
+        )
+    return name
 
 
 def load_manifest() -> dict:
@@ -105,14 +118,28 @@ def _skill_source_for(repo_path: Path) -> Path | None:
     return None
 
 
-def _add_shared_skill(name: str, source: Path) -> bool:
-    skills = user_skills_dir()
-    skills.mkdir(parents=True, exist_ok=True)
+def _symlink_sibling_dirs(skill_dir: Path, source_parent: Path) -> None:
+    for item in source_parent.iterdir():
+        if not item.is_dir() or item.name == ".git":
+            continue
+        dest = skill_dir / item.name
+        if dest.exists() or dest.is_symlink():
+            if dest.is_symlink():
+                dest.unlink()
+            elif dest.is_dir():
+                shutil.rmtree(dest)
+        dest.symlink_to(item)
 
-    old_flat = skills / f"{name}.md"
+
+def _add_shared_skill(name: str, source: Path, target_dir: Path | None = None) -> bool:
+    if target_dir is None:
+        target_dir = user_skills_dir()
+    target_dir.mkdir(parents=True, exist_ok=True)
+
+    old_flat = target_dir / f"{name}.md"
     if old_flat.exists() or old_flat.is_symlink():
         old_flat.unlink()
-    for old in skills.glob(f"{name}_*.md"):
+    for old in target_dir.glob(f"{name}_*.md"):
         if old.is_symlink() or old.exists():
             old.unlink()
 
@@ -121,42 +148,46 @@ def _add_shared_skill(name: str, source: Path) -> bool:
         md_files = sorted(source.glob("*.md"))
         if md_files:
             for f in md_files:
-                skill_dir = skills / name
+                skill_dir = target_dir / name
                 skill_dir.mkdir(parents=True, exist_ok=True)
                 link = skill_dir / "SKILL.md"
                 if link.exists() or link.is_symlink():
                     link.unlink()
                 link.symlink_to(f)
+                _symlink_sibling_dirs(skill_dir, source)
                 added = True
         if not added:
             for f in sorted(source.glob("**/SKILL.md")):
                 sub = f.parent.name
-                skill_dir = skills / f"{name}_{sub}"
+                skill_dir = target_dir / f"{name}_{sub}"
                 skill_dir.mkdir(parents=True, exist_ok=True)
                 link = skill_dir / "SKILL.md"
                 if link.exists() or link.is_symlink():
                     link.unlink()
                 link.symlink_to(f)
+                _symlink_sibling_dirs(skill_dir, f.parent)
                 added = True
         return added
 
-    skill_dir = skills / name
+    skill_dir = target_dir / name
     skill_dir.mkdir(parents=True, exist_ok=True)
     link = skill_dir / "SKILL.md"
     if link.exists() or link.is_symlink():
         link.unlink()
     link.symlink_to(source)
+    _symlink_sibling_dirs(skill_dir, source.parent)
     return True
 
 
-def _remove_shared_skill(name: str) -> int:
-    skills = user_skills_dir()
+def _remove_shared_skill(name: str, target_dir: Path | None = None) -> int:
+    if target_dir is None:
+        target_dir = user_skills_dir()
     removed = 0
-    for f in list(skills.glob(f"{name}.md")) + list(skills.glob(f"{name}_*.md")):
+    for f in list(target_dir.glob(f"{name}.md")) + list(target_dir.glob(f"{name}_*.md")):
         if f.is_symlink() or f.exists():
             f.unlink()
             removed += 1
-    for d in [skills / name] + list(skills.glob(f"{name}_*")):
+    for d in [target_dir / name] + list(target_dir.glob(f"{name}_*")):
         if d.is_dir():
             shutil.rmtree(d)
             removed += 1
@@ -173,24 +204,35 @@ def _refresh_skill_links() -> int:
     for name, meta in load_manifest().items():
         repo_path = _repo_abs_path(meta["path"])
         source = _skill_source_for(repo_path)
-        if source is not None and _add_shared_skill(name, source):
+        kd = meta.get("kind") or meta.get("category", "skill")
+        if source is not None and _add_shared_skill(name, source, kind_dir(kd)):
             count += 1
     return count
 
 
 def _repo_rel_path(abs_path: Path) -> str:
     """Store paths in the manifest relative to the registry root."""
+    reg = registry_dir().resolve()
+    resolved = abs_path.resolve()
     try:
-        return str(abs_path.relative_to(registry_dir()))
+        return str(resolved.relative_to(reg))
     except ValueError:
-        return str(abs_path)
+        raise ValueError(
+            f"path '{abs_path}' is outside the registry directory ({reg})"
+        )
 
 
 def _repo_abs_path(stored: str) -> Path:
     p = Path(stored)
-    if p.is_absolute():
-        return p
-    return registry_dir() / stored
+    resolved = p.resolve() if p.is_absolute() else (registry_dir() / stored).resolve()
+    reg = registry_dir().resolve()
+    try:
+        resolved.relative_to(reg)
+    except ValueError:
+        raise ValueError(
+            f"manifest entry path '{stored}' escapes the registry directory ({reg})"
+        )
+    return resolved
 
 
 def _clean_git_modules(rel_path: str) -> None:
@@ -226,13 +268,16 @@ def registry():
 @registry.command()
 @click.argument("git_url")
 @click.argument("name")
-@click.option("--category", default="skills", help="Registry category directory.")
-def add(git_url: str, name: str, category: str):
+@click.option("--kind", default="skill", type=click.Choice(REGISTRY_KINDS, case_sensitive=False),
+              help="Content kind: skill, rule, mcp, memory, or plan.")
+def add(git_url: str, name: str, kind: str):
     """Clone a skill/tool repo into ~/.aidem/registry and register it."""
+    name = _validate_name(name)
+    kind = _validate_name(kind)
     ensure_data_dirs()
-    category_dir = registry_dir() / category
-    category_dir.mkdir(parents=True, exist_ok=True)
-    target = category_dir / name
+    kind_registry_dir = registry_dir() / kind
+    kind_registry_dir.mkdir(parents=True, exist_ok=True)
+    target = kind_registry_dir / name
 
     if target.exists():
         click.echo(f"Error: {target} already exists.", err=True)
@@ -298,7 +343,7 @@ def add(git_url: str, name: str, category: str):
         "binary": binary or "",
         "runtime": runtime or "skills-only",
         "source": git_url,
-        "category": category,
+        "kind": kind,
     }
     save_manifest(manifest)
 
@@ -314,15 +359,16 @@ def add(git_url: str, name: str, category: str):
 
     source = _skill_source_for(target)
     if source is not None:
-        _add_shared_skill(name, source)
+        target_dir = kind_dir(kind)
+        _add_shared_skill(name, source, target_dir)
         mirrored = _regenerate_mirrors()
         click.echo(
-            f"Linked skill '{name}' into {user_skills_dir()} "
+            f"Linked {kind} '{name}' into {target_dir} "
             f"(mirrored to {mirrored} transform tool(s))."
         )
 
-    kind = "skill" if not binary else "tool"
-    click.echo(f"Added {kind} '{name}' ({category}). Run `aidem setup` to build tool bridges.")
+    label = kind if not binary else "tool"
+    click.echo(f"Added {label} '{name}' (kind={kind}). Run `aidem setup` to build tool bridges.")
 
 
 @registry.command()
@@ -390,7 +436,7 @@ def list_registry():
     click.echo("Registered skills/tools:")
     for name, meta in manifest.items():
         binary = meta.get("binary", "")
-        category = meta.get("category", "skills")
+        kd = meta.get("kind") or meta.get("category", "skill")
         repo_path = _repo_abs_path(meta["path"])
         has_skill = any((repo_path / c).exists() for c in SKILL_FILE_CANDIDATES)
         has_skill = has_skill or (
@@ -402,19 +448,20 @@ def list_registry():
         skill_mark = "+" if has_skill else " "
         runtime = meta.get("runtime", "uv")
         if not binary:
-            kind = "skills-only"
+            kind_label = "skills-only"
         elif runtime != "uv":
-            kind = f"{runtime} binary={binary}"
+            kind_label = f"{runtime} binary={binary}"
         else:
             installed = "✓" if shutil.which(binary) else "✗"
-            kind = f"binary={binary} installed={installed}"
-        click.echo(f"  {skill_mark} {name} ({category}) {kind}")
+            kind_label = f"binary={binary} installed={installed}"
+        click.echo(f"  {skill_mark} {name} (kind={kd}) {kind_label}")
 
 
 @registry.command()
 @click.argument("name")
 def install(name: str):
     """Install (or reinstall) a registered tool's binary."""
+    name = _validate_name(name)
     manifest = load_manifest()
     if name not in manifest:
         click.echo(f"Error: '{name}' not found in registry.", err=True)
@@ -441,6 +488,7 @@ def install(name: str):
 @click.argument("name")
 def remove(name: str):
     """Unregister and remove a skill/tool."""
+    name = _validate_name(name)
     manifest = load_manifest()
     if name not in manifest:
         click.echo(f"Error: '{name}' not found in registry.", err=True)
@@ -457,7 +505,8 @@ def remove(name: str):
 
     _clean_git_modules(meta["path"])
 
-    removed = _remove_shared_skill(name)
+    kd = meta.get("kind") or meta.get("category", "skill")
+    removed = _remove_shared_skill(name, kind_dir(kd))
     if removed:
         _regenerate_mirrors()
 
@@ -465,7 +514,7 @@ def remove(name: str):
     save_manifest(manifest)
     msg = f"Removed '{name}'."
     if removed:
-        msg += f" Removed {removed} skill file(s) from {user_skills_dir()}."
+        msg += f" Removed {removed} file(s) from {kind_dir(kd)}."
     click.echo(msg)
 
 
@@ -483,13 +532,13 @@ def setup():
     create` or `aidem registry add`) surfaces in every bridged tool with no
     further wiring:
 
-      Kilo:     ~/.kilo/skills                -> ~/.aidem/skills
-      Claude:   ~/.claude/skills              -> ~/.aidem/skills
-      Cursor:   ~/.cursor/skills              -> ~/.aidem/skills
-      OpenCode: ~/.config/opencode/skills     -> ~/.aidem/skills
-      Windsurf: ~/.codeium/windsurf/skills    -> ~/.aidem/skills
+      Kilo:     ~/.kilo/skills                -> ~/.aidem/skill
+      Claude:   ~/.claude/skills              -> ~/.aidem/skill
+      Cursor:   ~/.cursor/skills              -> ~/.aidem/skill
+      OpenCode: ~/.config/opencode/skills     -> ~/.aidem/skill
+      Windsurf: ~/.codeium/windsurf/skills    -> ~/.aidem/skill
 
-    Also reconciles ~/.aidem/skills against the registry and regenerates
+    Also reconciles ~/.aidem/skill against the registry and regenerates
     transformed mirrors. Idempotent — safe to re-run. Refuses to clobber an
     existing real directory (it tells you how to proceed).
     Skips tools whose parent directory is not present (tool not installed).
@@ -500,9 +549,9 @@ def setup():
     linked = _refresh_skill_links()
 
     skills = shared_skills_dir(PACKAGE_ROOT / "config")
-    if not any(skills.glob("*.md")) and linked == 0:
+    if not any(skills.iterdir()) and linked == 0:
         click.echo(
-            "No skills in ~/.aidem/skills. Create one with `aidem skill create <name>` "
+            "No skills in ~/.aidem/skill. Create one with `aidem skill create <name>` "
             "or register a repo with `aidem registry add`."
         )
 
@@ -605,12 +654,13 @@ def skill():
 @click.option("--body", "body", default=None,
               help="Skill body text (alternative to $EDITOR). Falls back to editor/paste.")
 def create(name: str, body: str | None):
-    """Create a new skill in ~/.aidem/skills/<name>/SKILL.md and refresh mirrors.
+    """Create a new skill in ~/.aidem/skill/<name>/SKILL.md and refresh mirrors.
 
     Skills follow the Agent Skills spec (skills/<name>/SKILL.md with YAML
     frontmatter). By default this opens $EDITOR (or prompts you to paste);
     pass --body "..." to provide it non-interactively.
     """
+    name = _validate_name(name)
     ensure_data_dirs()
     skills = user_skills_dir()
     skill_dir = skills / name

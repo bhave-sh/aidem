@@ -25,7 +25,7 @@ def test_ensure_data_dirs_creates_all(monkeypatch, tmp_path):
     monkeypatch.setenv("AIDEM_DATA_DIR", str(tmp_path / "d"))
     importlib.reload(aidem_paths)
     aidem_paths.ensure_data_dirs()
-    for p in ("skills", "cursor_skills", "registry"):
+    for p in ("skill", "registry"):
         assert (tmp_path / "d" / p).is_dir()
 
 
@@ -36,4 +36,4 @@ def test_shipped_paths_understandable(monkeypatch, tmp_path):
     assert aidem_paths.overlays_dir().name == "overlays"
     assert aidem_paths.canonical_agents().name == "AGENTS.md"
     # User-writable skills live under the data dir.
-    assert aidem_paths.skills_dir() == tmp_path / "d" / "skills"
+    assert aidem_paths.skills_dir() == tmp_path / "d" / "skill"
