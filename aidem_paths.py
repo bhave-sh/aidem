@@ -20,8 +20,19 @@ from pathlib import Path
 
 PACKAGE_ROOT = Path(__file__).resolve().parent
 
-# Kinds of content aidem manages.
+# Kinds of content aidem manages (singular kind *labels*; the --kind values).
 REGISTRY_KINDS = ("skill", "rule", "mcp", "memory", "plan")
+
+# Map a singular kind label to its plural *container* directory name.
+# Containers hold many entries of a kind, so they use the plural spelling that
+# every bridged AI tool also uses (~/.claude/skills, ~/.claude/rules, ...).
+# Kinds not yet built fall back to the label itself.
+KIND_CONTAINERS = {"skill": "skills", "rule": "rules"}
+
+
+def kind_container(kind: str) -> str:
+    """Plural container name for a kind (e.g. 'skill' -> 'skills')."""
+    return KIND_CONTAINERS.get(kind, kind)
 
 
 def data_dir() -> Path:
@@ -43,8 +54,8 @@ def config_dir() -> Path:
 
 
 def kind_dir(kind: str) -> Path:
-    """Content library directory for a given kind (e.g. 'skill' -> ~/.aidem/skill)."""
-    return data_dir() / kind
+    """Content library directory for a given kind (e.g. 'skill' -> ~/.aidem/skills)."""
+    return data_dir() / kind_container(kind)
 
 
 def skills_dir() -> Path:
@@ -73,6 +84,22 @@ def registry_dir() -> Path:
     return data_dir() / "registry"
 
 
+def envs_dir() -> Path:
+    """User-writable isolated tool environments (one dir per registered tool).
+
+    Each tool's isolated env lives at envs_dir()/<name>/ with its binaries under
+    envs_dir()/<name>/bin/. aidem resolves and execs binaries from here, never
+    from the global PATH (~/.local/bin), so tools are sandboxed per-name and
+    same-named CLIs never collide.
+    """
+    return data_dir() / "envs"
+
+
+def env_dir(name: str) -> Path:
+    """Isolated environment directory for a registered tool by name."""
+    return envs_dir() / name
+
+
 def manifest_path() -> Path:
     return registry_dir() / "manifest.json"
 
@@ -88,6 +115,30 @@ def canonical_agents() -> Path:
 
 
 def ensure_data_dirs() -> None:
-    """Create the data dir and key subdirs if missing."""
-    for p in (data_dir(), skills_dir(), registry_dir()):
+    """Create the data dir and key subdirs if missing.
+
+    Migrates legacy singular content containers (~/.aidem/skill, ~/.aidem/rule)
+    to plural names (~/.aidem/skills, ~/.aidem/rules) on first run. The registry
+    kind subdirs keep the singular kind label (internal clone storage; keeps
+    existing manifest paths stable).
+    """
+    data = data_dir()
+    data.mkdir(parents=True, exist_ok=True)
+    for singular, plural in (("skill", "skills"), ("rule", "rules")):
+        old = data / singular
+        new = data / plural
+        if old.exists() and not new.exists():
+            old.rename(new)
+        elif old.exists() and new.exists():
+            # Partial manual migration: merge old contents into new so entries
+            # in the singular dir don't silently vanish. Non-conflicting entries
+            # move over; conflicts are left in place with a warning printed.
+            for entry in list(old.iterdir()):
+                dest = new / entry.name
+                if dest.exists():
+                    print(f"aidem: migration conflict — {entry} exists in both "
+                          f"{old} and {new}; leaving the singular copy in place.")
+                else:
+                    entry.rename(dest)
+    for p in (skills_dir(), rules_dir(), registry_dir(), envs_dir()):
         p.mkdir(parents=True, exist_ok=True)

@@ -4,10 +4,13 @@ from .base import Generator
 
 
 class ClaudeGenerator(Generator):
-    """Bridge Claude Code's global skills dir to aidem's shared skills library.
+    """Bridge Claude Code's global skills + rules dirs to aidem's shared libraries.
 
     Skills doc: https://docs.anthropic.com/en/docs/claude-code/skills
-    Global path: ~/.claude/skills/<name>/SKILL.md
+    Skills global path: ~/.claude/skills/<name>/SKILL.md
+
+    Rules doc: https://docs.anthropic.com/en/docs/claude-code/memory
+    Rules global path: ~/.claude/rules/*.md (multi-file, supports symlinks).
     """
 
     name = "claude"
@@ -16,3 +19,7 @@ class ClaudeGenerator(Generator):
     @property
     def global_path(self) -> Path | None:
         return Path.home() / ".claude" / "skills"
+
+    @property
+    def rules_global_path(self) -> Path | None:
+        return Path.home() / ".claude" / "rules"

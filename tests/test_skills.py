@@ -50,7 +50,7 @@ def test_setup_refuses_to_clobber_real_dir(invoke, fake_dirs):
 
 
 def test_skill_create_writes_and_mirrors(invoke, fake_dirs):
-    res = invoke("skill", "create", "demo-review", "--body", SKILL_BODY)
+    res = invoke("create", "demo-review", "--skill", "--body", SKILL_BODY)
     assert res.exit_code == 0, res.output
     skill_file = fake_dirs["skills"] / "demo-review" / "SKILL.md"
     assert skill_file.exists()
@@ -64,7 +64,7 @@ def test_skill_visible_through_bridges(invoke, fake_dirs):
     (home / ".kilo").mkdir(parents=True, exist_ok=True)
     (home / ".claude").mkdir(parents=True, exist_ok=True)
     (home / ".cursor").mkdir(parents=True, exist_ok=True)
-    invoke("skill", "create", "demo-review", "--body", SKILL_BODY)
+    invoke("create", "demo-review", "--skill", "--body", SKILL_BODY)
     invoke("setup")
     # Passthrough tools see the directory-based skill via the dir symlink.
     assert (home / ".kilo" / "skills" / "demo-review" / "SKILL.md").exists()
@@ -73,20 +73,20 @@ def test_skill_visible_through_bridges(invoke, fake_dirs):
 
 
 def test_skill_create_warns_on_wrong_format(invoke, fake_dirs):
-    res = invoke("skill", "create", "bad", "--body", "no heading here")
+    res = invoke("create", "bad", "--skill", "--body", "no heading here")
     assert res.exit_code == 0
     assert "missing 'name' in frontmatter" in res.output
 
 
 def test_skill_create_overwrite_prompt(invoke, fake_dirs):
-    invoke("skill", "create", "demo-review", "--body", SKILL_BODY)
+    invoke("create", "demo-review", "--skill", "--body", SKILL_BODY)
     # Refuse overwrite via stdin "n".
-    res = invoke("skill", "create", "demo-review", "--body", SKILL_BODY, input="n\n")
+    res = invoke("create", "demo-review", "--skill", "--body", SKILL_BODY, input="n\n")
     assert "Aborted" in res.output
 
 
 def test_setup_help_lists_commands(invoke):
     res = invoke("--help")
     assert res.exit_code == 0
-    for cmd in ("init", "setup", "run", "skill", "registry"):
+    for cmd in ("init", "setup", "run", "create", "registry"):
         assert cmd in res.output
