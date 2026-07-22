@@ -4,7 +4,7 @@ import importlib
 import os
 from pathlib import Path
 
-import aidem_paths
+from aidem import paths as aidem_paths
 
 
 def test_data_dir_default_to_dotaidem(monkeypatch, tmp_path):

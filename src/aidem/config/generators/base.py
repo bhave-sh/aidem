@@ -52,10 +52,10 @@ class Generator:
         # The shared canonical libraries live in the user data dir (writable,
         # persistent); config_dir holds shipped read-only assets.
         if skills_dir is None:
-            from aidem_paths import skills_dir as _skills_dir
+            from aidem.paths import skills_dir as _skills_dir
             skills_dir = _skills_dir()
         if rules_dir is None:
-            from aidem_paths import rules_dir as _rules_dir
+            from aidem.paths import rules_dir as _rules_dir
             rules_dir = _rules_dir()
         self.skills_dir = skills_dir
         self.rules_dir = rules_dir

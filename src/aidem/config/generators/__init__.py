@@ -14,7 +14,7 @@ def discover_generators(config_dir: Path, skills_dir: Path | None = None,
 
     skills_dir / rules_dir default to the user data dir's shared libraries.
     """
-    from aidem_paths import skills_dir as _skills_dir, rules_dir as _rules_dir
+    from aidem.paths import skills_dir as _skills_dir, rules_dir as _rules_dir
     sd = skills_dir if skills_dir is not None else _skills_dir()
     rd = rules_dir if rules_dir is not None else _rules_dir()
     return [
@@ -34,7 +34,7 @@ def shared_skills_dir(config_dir: Path) -> Path:
     here. Passthrough tools (Kilo, Claude) dir-symlink their dot-folders to this.
     Transform tools (Cursor) regenerate derived mirrors from here.
     """
-    from aidem_paths import skills_dir as _skills_dir
+    from aidem.paths import skills_dir as _skills_dir
     return _skills_dir()
 
 

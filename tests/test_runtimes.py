@@ -8,8 +8,8 @@ from unittest.mock import patch
 
 import pytest
 
-import aidem_paths
-import aidem_cli
+from aidem import paths as aidem_paths
+from aidem import cli as aidem_cli
 
 
 @pytest.fixture()
@@ -59,7 +59,7 @@ def test_envs_dir_created_and_per_tool(fake_dirs):
 
 def test_detect_runtime_markers(fake_dirs, tmp_path):
     _reload(fake_dirs)
-    from config.runtimes import detect_runtime
+    from aidem.config.runtimes import detect_runtime
     repo = tmp_path / "r"
     repo.mkdir()
     (repo / "pyproject.toml").write_text("[project]\nname='x'\n")
@@ -74,7 +74,7 @@ def test_detect_runtime_markers(fake_dirs, tmp_path):
 
 def test_runtime_for_dispatches_by_kind(fake_dirs):
     _reload(fake_dirs)
-    from config.runtimes import runtime_for, UvVenvRuntime, BinaryRuntime, DockerRuntime
+    from aidem.config.runtimes import runtime_for, UvVenvRuntime, BinaryRuntime, DockerRuntime
     assert isinstance(runtime_for({"runtime": "uv", "name": "t"}), UvVenvRuntime)
     assert isinstance(runtime_for({"runtime": "binary", "name": "t"}), BinaryRuntime)
     assert isinstance(runtime_for({"runtime": "docker", "name": "t"}), DockerRuntime)
@@ -85,10 +85,10 @@ def test_uv_venv_install_runs_uv_venv_then_pip(fake_dirs, monkeypatch):
     calls = []
     monkeypatch.setattr(subprocess, "run", lambda cmd, *a, **kw: calls.append(list(cmd)) or subprocess.CompletedProcess(cmd, 0))
     monkeypatch.setattr(
-        "config.runtimes.uv_venv.UvVenvRuntime._on_pypi",
+        "aidem.config.runtimes.uv_venv.UvVenvRuntime._on_pypi",
         lambda self, pkg: True,
     )
-    from config.runtimes import UvVenvRuntime
+    from aidem.config.runtimes import UvVenvRuntime
     meta = {"runtime": "uv", "name": "demo", "binary": "demo", "spec": "demo-ai[all]"}
     rt = UvVenvRuntime(meta, aidem_paths.env_dir("demo"))
     msg = rt.install("https://github.com/o/demo")
@@ -106,9 +106,9 @@ def test_uv_venv_all_extras_heuristic(fake_dirs, tmp_path, monkeypatch):
     )
     monkeypatch.setattr(subprocess, "run", lambda cmd, *a, **kw: subprocess.CompletedProcess(cmd, 0))
     monkeypatch.setattr(
-        "config.runtimes.uv_venv.UvVenvRuntime._on_pypi", lambda self, pkg: True,
+        "aidem.config.runtimes.uv_venv.UvVenvRuntime._on_pypi", lambda self, pkg: True,
     )
-    from config.runtimes import UvVenvRuntime
+    from aidem.config.runtimes import UvVenvRuntime
     meta = {"runtime": "uv", "name": "headroom", "binary": "headroom", "_repo_path": str(repo)}
     rt = UvVenvRuntime(meta, aidem_paths.env_dir("headroom"))
     assert rt._detect_extras() == "all"
@@ -124,10 +124,10 @@ def test_uv_venv_pypi_wheel_preference(fake_dirs, tmp_path, monkeypatch):
         "[project]\nname='pkg'\n[project.scripts]\npkg='pkg:main'\n"
     )
     monkeypatch.setattr(
-        "config.runtimes.uv_venv.UvVenvRuntime._on_pypi", lambda self, pkg: True,
+        "aidem.config.runtimes.uv_venv.UvVenvRuntime._on_pypi", lambda self, pkg: True,
     )
     monkeypatch.setattr(subprocess, "run", lambda cmd, *a, **kw: calls.append(list(cmd)) or subprocess.CompletedProcess(cmd, 0))
-    from config.runtimes import UvVenvRuntime
+    from aidem.config.runtimes import UvVenvRuntime
     meta = {"runtime": "uv", "name": "pkg", "binary": "pkg", "_repo_path": str(repo)}
     rt = UvVenvRuntime(meta, aidem_paths.env_dir("pkg"))
     rt.install("https://github.com/o/pkg")
@@ -143,10 +143,10 @@ def test_uv_venv_falls_back_to_editable_when_not_on_pypi(fake_dirs, tmp_path, mo
     repo.mkdir()
     (repo / "pyproject.toml").write_text("[project]\nname='localonly'\n")
     monkeypatch.setattr(
-        "config.runtimes.uv_venv.UvVenvRuntime._on_pypi", lambda self, pkg: False,
+        "aidem.config.runtimes.uv_venv.UvVenvRuntime._on_pypi", lambda self, pkg: False,
     )
     monkeypatch.setattr(subprocess, "run", lambda cmd, *a, **kw: calls.append(list(cmd)) or subprocess.CompletedProcess(cmd, 0))
-    from config.runtimes import UvVenvRuntime
+    from aidem.config.runtimes import UvVenvRuntime
     meta = {"runtime": "uv", "name": "lo", "binary": "lo", "_repo_path": str(repo)}
     rt = UvVenvRuntime(meta, aidem_paths.env_dir("lo"))
     rt.install("https://github.com/o/lo")
@@ -165,10 +165,10 @@ def test_binary_runtime_picks_platform_asset(fake_dirs, monkeypatch):
          "browser_download_url": "https://example/rtk-win.zip"},
     ]
     monkeypatch.setattr(
-        "config.runtimes.binary.BinaryRuntime._latest_release_assets",
+        "aidem.config.runtimes.binary.BinaryRuntime._latest_release_assets",
         lambda self, source: assets,
     )
-    from config.runtimes import BinaryRuntime
+    from aidem.config.runtimes import BinaryRuntime
     meta = {"runtime": "binary", "name": "rtk", "binary": "rtk", "source": "https://github.com/rtk-ai/rtk"}
     rt = BinaryRuntime(meta, aidem_paths.env_dir("rtk"))
 
@@ -198,10 +198,10 @@ def test_binary_runtime_asset_override(fake_dirs, monkeypatch):
         {"name": "rtk-aarch64-apple-darwin.tar.gz", "browser_download_url": "https://example/rtk.tar.gz"},
     ]
     monkeypatch.setattr(
-        "config.runtimes.binary.BinaryRuntime._latest_release_assets",
+        "aidem.config.runtimes.binary.BinaryRuntime._latest_release_assets",
         lambda self, source: assets,
     )
-    from config.runtimes import BinaryRuntime
+    from aidem.config.runtimes import BinaryRuntime
     meta = {"runtime": "binary", "name": "rtk", "binary": "rtk",
             "source": "https://github.com/rtk-ai/rtk", "asset": "weird"}
     rt = BinaryRuntime(meta, aidem_paths.env_dir("rtk"))
@@ -211,7 +211,7 @@ def test_binary_runtime_asset_override(fake_dirs, monkeypatch):
 
 def test_binary_runtime_owner_repo_parsing(fake_dirs):
     _reload(fake_dirs)
-    from config.runtimes.binary import BinaryRuntime
+    from aidem.config.runtimes.binary import BinaryRuntime
     assert BinaryRuntime._owner_repo("https://github.com/rtk-ai/rtk") == "rtk-ai/rtk"
     assert BinaryRuntime._owner_repo("https://github.com/rtk-ai/rtk.git") == "rtk-ai/rtk"
     assert BinaryRuntime._owner_repo("git@github.com:rtk-ai/rtk.git") == "rtk-ai/rtk"
@@ -220,16 +220,16 @@ def test_binary_runtime_owner_repo_parsing(fake_dirs):
 
 def test_docker_runtime_run_mounts_cwd(fake_dirs, monkeypatch):
     _reload(fake_dirs)
-    monkeypatch.setattr("config.runtimes.docker.shutil.which", lambda x: "/usr/local/bin/docker")
-    monkeypatch.setattr("config.runtimes.docker.sys.stdin.isatty", lambda: False)
+    monkeypatch.setattr("aidem.config.runtimes.docker.shutil.which", lambda x: "/usr/local/bin/docker")
+    monkeypatch.setattr("aidem.config.runtimes.docker.sys.stdin.isatty", lambda: False)
     monkeypatch.chdir(fake_dirs["home"])
     execved = {}
     def fake_execvp(cmd, args):
         execved["cmd"] = cmd
         execved["args"] = args
         raise SystemExit(0)
-    monkeypatch.setattr("config.runtimes.docker.os.execvp", fake_execvp)
-    from config.runtimes import DockerRuntime
+    monkeypatch.setattr("aidem.config.runtimes.docker.os.execvp", fake_execvp)
+    from aidem.config.runtimes import DockerRuntime
     meta = {"runtime": "docker", "name": "headroom", "binary": "headroom", "image": "ghcr.io/o/h:latest"}
     rt = DockerRuntime(meta, aidem_paths.env_dir("headroom"))
     monkeypatch.setattr(rt, "is_installed", lambda: True)
@@ -249,10 +249,10 @@ def test_docker_runtime_run_mounts_cwd(fake_dirs, monkeypatch):
 
 def test_docker_runtime_run_before_install_errors_clearly(fake_dirs, monkeypatch):
     _reload(fake_dirs)
-    monkeypatch.setattr("config.runtimes.docker.shutil.which", lambda x: "/usr/local/bin/docker")
+    monkeypatch.setattr("aidem.config.runtimes.docker.shutil.which", lambda x: "/usr/local/bin/docker")
     monkeypatch.setattr(subprocess, "run",
                         lambda cmd, *a, **kw: subprocess.CompletedProcess(cmd, 1))
-    from config.runtimes import DockerRuntime
+    from aidem.config.runtimes import DockerRuntime
     meta = {"runtime": "docker", "name": "t", "binary": "t", "image": "img:latest"}
     rt = DockerRuntime(meta, aidem_paths.env_dir("t"))
     with pytest.raises(RuntimeError, match="not installed"):
@@ -264,10 +264,10 @@ def test_docker_runtime_install_builds_from_dockerfile(fake_dirs, tmp_path, monk
     repo = tmp_path / "r"
     repo.mkdir()
     (repo / "Dockerfile").write_text("FROM alpine\n")
-    monkeypatch.setattr("config.runtimes.docker.shutil.which", lambda x: "/usr/local/bin/docker")
+    monkeypatch.setattr("aidem.config.runtimes.docker.shutil.which", lambda x: "/usr/local/bin/docker")
     calls = []
     monkeypatch.setattr(subprocess, "run", lambda cmd, *a, **kw: calls.append(list(cmd)) or subprocess.CompletedProcess(cmd, 0))
-    from config.runtimes import DockerRuntime
+    from aidem.config.runtimes import DockerRuntime
     meta = {"runtime": "docker", "name": "t", "binary": "t", "_repo_path": str(repo)}
     rt = DockerRuntime(meta, aidem_paths.env_dir("t"))
     msg = rt.install("https://github.com/o/t")
@@ -280,11 +280,11 @@ def test_binary_runtime_rejects_traversal_in_tarball(fake_dirs, monkeypatch):
     _reload(fake_dirs)
     assets = [{"name": "bad.tar.gz", "browser_download_url": "https://github.com/o/r/releases/download/v1/bad.tar.gz"}]
     monkeypatch.setattr(
-        "config.runtimes.binary.BinaryRuntime._latest_release_assets",
+        "aidem.config.runtimes.binary.BinaryRuntime._latest_release_assets",
         lambda self, source: assets,
     )
     monkeypatch.setattr(
-        "config.runtimes.binary.BinaryRuntime._verify_checksum_if_available",
+        "aidem.config.runtimes.binary.BinaryRuntime._verify_checksum_if_available",
         lambda self, a, asset, archive: None,
     )
     import io, tarfile
@@ -301,8 +301,8 @@ def test_binary_runtime_rejects_traversal_in_tarball(fake_dirs, monkeypatch):
             evil = tarfile.TarInfo("../../escaped.txt")
             evil.size = len(evil_data)
             tf.addfile(evil, io.BytesIO(evil_data))
-    monkeypatch.setattr("config.runtimes.binary.BinaryRuntime._download", fake_download)
-    from config.runtimes import BinaryRuntime
+    monkeypatch.setattr("aidem.config.runtimes.binary.BinaryRuntime._download", fake_download)
+    from aidem.config.runtimes import BinaryRuntime
     meta = {"runtime": "binary", "name": "rtk", "binary": "rtk", "source": "https://github.com/rtk-ai/rtk"}
     rt = BinaryRuntime(meta, aidem_paths.env_dir("rtk"))
     rt.install("https://github.com/rtk-ai/rtk")
@@ -315,7 +315,7 @@ def test_binary_runtime_rejects_traversal_in_tarball(fake_dirs, monkeypatch):
 
 def test_binary_runtime_rejects_non_github_download_url(fake_dirs, monkeypatch):
     _reload(fake_dirs)
-    from config.runtimes.binary import BinaryRuntime
+    from aidem.config.runtimes.binary import BinaryRuntime
     meta = {"runtime": "binary", "name": "t", "binary": "t", "source": "https://github.com/o/t"}
     rt = BinaryRuntime(meta, aidem_paths.env_dir("t"))
     with pytest.raises(RuntimeError, match="non-GitHub"):
@@ -330,7 +330,7 @@ def test_binary_runtime_checksum_mismatch_rejected(fake_dirs, monkeypatch):
     sha_asset = {"name": "checksums.txt", "browser_download_url": "https://github.com/o/r/releases/download/v1/checksums.txt"}
     assets = [asset, sha_asset]
     monkeypatch.setattr(
-        "config.runtimes.binary.BinaryRuntime._latest_release_assets",
+        "aidem.config.runtimes.binary.BinaryRuntime._latest_release_assets",
         lambda self, source: assets,
     )
     import io, tarfile
@@ -344,8 +344,8 @@ def test_binary_runtime_checksum_mismatch_rejected(fake_dirs, monkeypatch):
                 info.size = len(data)
                 info.mode = 0o755
                 tf.addfile(info, io.BytesIO(data))
-    monkeypatch.setattr("config.runtimes.binary.BinaryRuntime._download", fake_download)
-    from config.runtimes import BinaryRuntime
+    monkeypatch.setattr("aidem.config.runtimes.binary.BinaryRuntime._download", fake_download)
+    from aidem.config.runtimes import BinaryRuntime
     meta = {"runtime": "binary", "name": "rtk", "binary": "rtk", "source": "https://github.com/rtk-ai/rtk"}
     rt = BinaryRuntime(meta, aidem_paths.env_dir("rtk"))
     with pytest.raises(RuntimeError, match="checksum verification failed"):
@@ -367,7 +367,7 @@ def test_resolve_run_binary_legacy_fallback(fake_dirs, monkeypatch):
     _reload(fake_dirs)
     aidem_paths.ensure_data_dirs()
     # No env binary; simulate a legacy global PATH install.
-    monkeypatch.setattr("aidem_cli.shutil.which", lambda b: f"/usr/local/bin/{b}")
+    monkeypatch.setattr("aidem.cli.shutil.which", lambda b: f"/usr/local/bin/{b}")
     resolved, migrated = aidem_cli._resolve_run_binary({"binary": "rtk"}, "rtk")
     assert resolved == "/usr/local/bin/rtk"
     assert migrated is True
@@ -376,7 +376,7 @@ def test_resolve_run_binary_legacy_fallback(fake_dirs, monkeypatch):
 def test_resolve_run_binary_missing(fake_dirs, monkeypatch):
     _reload(fake_dirs)
     aidem_paths.ensure_data_dirs()
-    monkeypatch.setattr("aidem_cli.shutil.which", lambda b: None)
+    monkeypatch.setattr("aidem.cli.shutil.which", lambda b: None)
     resolved, migrated = aidem_cli._resolve_run_binary({"binary": "ghost"}, "ghost")
     assert resolved is None
     assert migrated is False
@@ -412,6 +412,6 @@ def test_run_uses_env_binary_not_global_path(invoke, fake_dirs, monkeypatch, ski
     def fake_execvp(cmd, args):
         execved["cmd"] = cmd
         raise SystemExit(0)
-    monkeypatch.setattr("aidem_cli.os.execvp", fake_execvp)
+    monkeypatch.setattr("aidem.cli.os.execvp", fake_execvp)
     res = invoke("run", "mytool", "--help")
     assert env_bin.as_posix() in str(execved.get("cmd", "")) or execved.get("cmd") == str(env_bin)

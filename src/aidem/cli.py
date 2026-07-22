@@ -2,10 +2,10 @@
 """aidem: AI development environment manager.
 
 Layers:
-  0. Registry  — git clone skill/tool repos and (optionally) install binaries via uv.
-  1. Bridging  — one-time dir symlinks from each IDE's skills dir into ~/.aidem/skills;
+  0. Registry  -- git clone skill/tool repos and (optionally) install binaries via uv.
+  1. Bridging  -- one-time dir symlinks from each IDE's skills dir into ~/.aidem/skills;
                  plus repo init (a single committed AGENTS.md).
-  2. Execution — pass-through run of registered tools in isolated uv environments.
+  2. Execution -- pass-through run of registered tools in isolated uv environments.
 
 User data (skills, registry, manifest) lives in ~/.aidem (overridable via
 AIDEM_DATA_DIR). Shipped package assets (generators, overlays, canonical
@@ -22,7 +22,7 @@ from pathlib import Path
 
 import click
 
-from aidem_paths import (
+from .paths import (
     data_dir,
     registry_dir,
     env_dir,
@@ -37,7 +37,7 @@ from aidem_paths import (
     PACKAGE_ROOT,
 )
 
-import aidem_paths  # noqa: F401  (re-exported for tests)
+from . import paths as aidem_paths  # noqa: F401  (re-exported for tests)
 
 # Skill file names scanned for in a registered repo (checked in order).
 SKILL_FILE_CANDIDATES = ("skill.md", "SKILL.md", "SKILL.MD")
@@ -47,8 +47,8 @@ RULE_FILE_CANDIDATES = ("rule.md", "RULE.md")
 
 # Runtime kinds and deferred set come from a single source of truth in
 # config.runtimes to avoid drift between the CLI and the adapters.
-from config.runtimes import SUPPORTED_RUNTIMES as RUNTIME_KINDS
-from config.runtimes import DEFERRED_RUNTIMES
+from .config.runtimes import SUPPORTED_RUNTIMES as RUNTIME_KINDS
+from .config.runtimes import DEFERRED_RUNTIMES
 
 
 # ---------------------------------------------------------------------------
@@ -92,7 +92,7 @@ def _detect_runtime(tool_path: Path) -> str | None:
     Returns a supported kind ('uv'/'binary'/'docker'), a deferred kind
     ('npm'/'cargo'/'go'), or None (no marker / skills-only).
     """
-    from config.runtimes import detect_runtime
+    from .config.runtimes import detect_runtime
     return detect_runtime(tool_path)
 
 
@@ -264,12 +264,12 @@ def _remove_shared_content(name: str, kind: str) -> int:
 
 
 def _regenerate_mirrors() -> int:
-    from config.generators import regenerate_all_mirrors
+    from .config.generators import regenerate_all_mirrors
     return regenerate_all_mirrors(PACKAGE_ROOT / "config")
 
 
 def _regenerate_rule_mirrors() -> int:
-    from config.generators import regenerate_all_rule_mirrors
+    from .config.generators import regenerate_all_rule_mirrors
     return regenerate_all_rule_mirrors(PACKAGE_ROOT / "config")
 
 
@@ -318,7 +318,7 @@ def _clean_git_modules(rel_path: str) -> None:
 
 def _runtime_for(meta: dict, name: str) -> "object":
     """Construct the runtime adapter for a manifest entry (env-owned)."""
-    from config.runtimes import runtime_for
+    from .config.runtimes import runtime_for
     enriched = dict(meta)
     enriched.setdefault("name", name)
     enriched.setdefault("binary", meta.get("binary", name))
@@ -721,7 +721,7 @@ def setup():
     existing real directory (it tells you how to proceed). Skips tools whose
     parent directory is not present (tool not installed).
     """
-    from config.generators import (
+    from .config.generators import (
         ensure_all_bridges, ensure_all_rule_bridges, shared_skills_dir,
         collect_rule_warnings,
     )

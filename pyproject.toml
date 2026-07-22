@@ -3,22 +3,65 @@ name = "aidem"
 version = "0.1.0"
 description = "Universal AI development environment manager"
 readme = "README.md"
-license = { text = "Apache-2.0" }
+license = "Apache-2.0"
+license-files = ["LICENSE.md"]
 requires-python = ">=3.11"
+authors = [
+    { name = "Bhavesh J" },
+]
+keywords = [
+    "ai",
+    "cli",
+    "agent",
+    "development-environment",
+    "skills",
+    "rules",
+    "mcp",
+    "agents-md",
+]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Environment :: Console",
+    "Intended Audience :: Developers",
+    "License :: OSI Approved :: Apache Software License",
+    "Operating System :: OS Independent",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Programming Language :: Python :: 3.14",
+    "Topic :: Software Development",
+    "Topic :: Utilities",
+]
 dependencies = [
     "click>=8.0",
     "jinja2>=3.0",
 ]
 
+[project.urls]
+Homepage = "https://github.com/bhave-sh/aidem"
+Repository = "https://github.com/bhave-sh/aidem"
+Issues = "https://github.com/bhave-sh/aidem/issues"
+Changelog = "https://github.com/bhave-sh/aidem/releases"
+
 [project.optional-dependencies]
-dev = ["pytest>=8.0"]
+dev = ["pytest>=8.0", "twine>=5.0"]
 
 [project.scripts]
-aidem = "aidem_cli:cli"
+aidem = "aidem.cli:cli"
 
 [build-system]
 requires = ["hatchling"]
 build-backend = "hatchling.build"
 
 [tool.hatch.build.targets.wheel]
-only-include = ["aidem_cli.py", "aidem_paths.py", "config"]
+packages = ["src/aidem"]
+
+[tool.hatch.build.targets.sdist]
+include = [
+    "src/aidem",
+    "tests",
+    "README.md",
+    "LICENSE.md",
+    "pyproject.toml",
+]

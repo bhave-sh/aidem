@@ -51,7 +51,7 @@ def test_init_force_skips_prompt(invoke, tmp_path, monkeypatch):
 
 
 def test_init_refuses_inside_package_dir_by_default(invoke, monkeypatch):
-    import aidem_paths
+    from aidem import paths as aidem_paths
     monkeypatch.chdir(aidem_paths.PACKAGE_ROOT)
     res = invoke("init")
     assert "Refusing to write" in res.output

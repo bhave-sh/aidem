@@ -41,7 +41,7 @@ def runtime_for(meta: dict) -> Runtime:
     Reads 'runtime' from meta and dispatches. The env path is resolved from
     aidem_paths.env_dir(name) so runtimes never touch the global PATH.
     """
-    from aidem_paths import env_dir
+    from aidem.paths import env_dir
     name = meta.get("name") or meta.get("binary") or ""
     env_path = env_dir(name)
     kind = meta.get("runtime", "uv")

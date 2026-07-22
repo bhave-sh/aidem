@@ -26,9 +26,9 @@ def fake_dirs(tmp_path, monkeypatch):
     monkeypatch.setenv("HOME", str(home))
 
     # Reimport aidem_paths so module-level resolution picks up the env var.
-    import aidem_paths
+    from aidem import paths as aidem_paths
     importlib.reload(aidem_paths)
-    import aidem_cli
+    from aidem import cli as aidem_cli
     importlib.reload(aidem_cli)
 
     return {
@@ -45,7 +45,7 @@ def fake_dirs(tmp_path, monkeypatch):
 def invoke(fake_dirs):
     """Click CLI runner pre-wired to the fake dirs."""
     from click.testing import CliRunner
-    import aidem_cli
+    from aidem import cli as aidem_cli
 
     runner = CliRunner()
 
