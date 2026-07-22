@@ -19,11 +19,14 @@ jobs:
         with:
           python-version: "3.12"
 
+      - name: Sync dev extras (for twine)
+        run: uv sync --extra dev
+
       - name: Build distributions
         run: uv build
 
       - name: Verify distributions metadata
-        run: uv run twine check dist/*
+        run: uv run --extra dev twine check dist/*
 
       - name: Upload distributions as artifact
         uses: actions/upload-artifact@v4
