@@ -104,6 +104,37 @@ def manifest_path() -> Path:
     return registry_dir() / "manifest.json"
 
 
+def server_state_path() -> Path:
+    """Enterprise server connection state (~/.aidem/server.json)."""
+    return data_dir() / "server.json"
+
+
+def credentials_fallback_path() -> Path:
+    """0600 credential file used when the OS keychain is unavailable."""
+    return data_dir() / ".credentials.json"
+
+
+def _validate_org(org: str) -> str:
+    """Reject org names that could escape the data directory.
+
+    The org string comes from the server, so it is validated with the same
+    rules as registry entry names before being used in any path.
+    """
+    if not org or ".." in org or "/" in org or "\\" in org:
+        raise ValueError(f"invalid org name: {org!r}")
+    return org
+
+
+def org_root(org: str) -> Path:
+    """Root dir for org-managed content (~/.aidem/org/<org>)."""
+    return data_dir() / "org" / _validate_org(org)
+
+
+def org_registry_dir(org: str) -> Path:
+    """Org content clone storage (~/.aidem/org/<org>/registry)."""
+    return org_root(org) / "registry"
+
+
 def overlays_dir() -> Path:
     """Shipped package overlays (read-only project-type AGENTS.md templates)."""
     return config_dir() / "overlays"

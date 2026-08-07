@@ -67,6 +67,42 @@ def _validate_name(name: str) -> str:
     return name
 
 
+def _enforce_policy(command_id: str, *, url: str | None = None) -> None:
+    """Block a command when the org server policy forbids it (enforced mode)."""
+    from .server_state import policy_allows
+    allowed, reason = policy_allows(command_id, url=url)
+    if not allowed:
+        click.echo(f"Error: {reason}", err=True)
+        sys.exit(1)
+
+
+def _normalize_server_url(url: str) -> str:
+    """Normalize a server URL: scheme required (default https), no trailing /."""
+    url = url.strip()
+    if "://" not in url:
+        url = "https://" + url
+    return url.rstrip("/")
+
+
+def _sync_org_content_best_effort() -> None:
+    """Pull org content after setup/update when a server connection exists.
+
+    Sync failures (server unreachable, expired session) are warnings here —
+    only an explicit `aidem server sync` fails the command.
+    """
+    from . import server_state
+    if not server_state.is_connected():
+        return
+    from . import server_sync
+    from .server_http import ServerError
+    try:
+        linked, removed, mcp = server_sync.sync_org_content(echo=click.echo)
+        click.echo(f"Org content synced ({linked} item(s), {removed} removed, "
+                   f"{mcp} MCP entries).")
+    except ServerError as exc:
+        click.echo(f"Warning: org content sync failed: {exc.message}", err=True)
+
+
 def load_manifest() -> dict:
     if manifest_path().exists():
         return json.loads(manifest_path().read_text())
@@ -297,14 +333,20 @@ def _repo_rel_path(abs_path: Path) -> str:
 
 
 def _repo_abs_path(stored: str) -> Path:
+    """Resolve a stored manifest path, rejecting escapes from its root.
+
+    Personal entries are relative to the registry dir; org entries carry an
+    "org/" prefix and are relative to the data dir (~/.aidem/org/...).
+    """
     p = Path(stored)
-    resolved = p.resolve() if p.is_absolute() else (registry_dir() / stored).resolve()
-    reg = registry_dir().resolve()
+    root = data_dir() if stored.startswith("org/") and not p.is_absolute() else registry_dir()
+    resolved = p.resolve() if p.is_absolute() else (root / stored).resolve()
+    root = root.resolve()
     try:
-        resolved.relative_to(reg)
+        resolved.relative_to(root)
     except ValueError:
         raise ValueError(
-            f"manifest entry path '{stored}' escapes the registry directory ({reg})"
+            f"manifest entry path '{stored}' escapes its root directory ({root})"
         )
     return resolved
 
@@ -353,9 +395,19 @@ def _resolve_run_binary(meta: dict, name: str) -> tuple[str | None, bool]:
 
 @click.group()
 @click.version_option(version="0.1.0")
-def cli():
+@click.pass_context
+def cli(ctx):
     """aidem: AI development environment manager."""
-    pass
+    # Best-effort server stale-check: refresh policy when stale and surface a
+    # one-line drift hint. Fully guarded — a broken/unreachable server must
+    # never break local commands (this runs before `aidem run`'s execvp).
+    cmd = ctx.invoked_subcommand or ""
+    if cmd == "server":
+        return  # the server subgroup handles its own freshness
+    from .server_sync import maybe_refresh_policy
+    hint = maybe_refresh_policy()
+    if hint:
+        click.echo(f"Note: {hint}", err=True)
 
 
 # ---------------------------------------------------------------------------
@@ -404,6 +456,7 @@ def add(git_url: str, name: str, kind: str, runtime_opt: str | None,
     global PATH. Override the runtime with --runtime, and pass runtime-specific
     hints (--spec/--extras, --asset, --image) when the auto-heuristic needs help.
     """
+    _enforce_policy("registry.add", url=git_url)
     name = _validate_name(name)
     kind = _validate_name(kind)
     ensure_data_dirs()
@@ -548,6 +601,7 @@ def setup():
 @registry.command()
 def update():
     """Pull updates for all cloned registry repos."""
+    _enforce_policy("registry.update")
     manifest = load_manifest()
     if not manifest:
         click.echo("Nothing to update. Registry is empty.")
@@ -566,6 +620,7 @@ def update():
         f"Registry updated ({mirrored} skill mirror(s), {rule_mirrored} rule mirror(s)). "
         f"Run `aidem setup` to refresh links/mirrors."
     )
+    _sync_org_content_best_effort()
 
 
 @registry.command(name="list")
@@ -610,7 +665,8 @@ def list_registry():
             rt = _runtime_for({**meta, "name": name, "_repo_path": str(repo_path)}, name)
             installed = "yes" if rt.is_installed() else "no"
             kind_label = f"runtime={runtime} binary={binary} env={installed}"
-        click.echo(f"  {skill_mark} {name} (kind={kd}) {kind_label}")
+        org_label = f" [org:{meta['org']}]" if meta.get("owner") == "org" else ""
+        click.echo(f"  {skill_mark} {name} (kind={kd}) {kind_label}{org_label}")
 
 
 @registry.command()
@@ -644,12 +700,20 @@ def install(name: str):
 @click.argument("name")
 def remove(name: str):
     """Unregister and remove a skill/tool."""
+    _enforce_policy("registry.remove")
     name = _validate_name(name)
     manifest = load_manifest()
     if name not in manifest:
         click.echo(f"Error: '{name}' not found in registry.", err=True)
         sys.exit(1)
     meta = manifest[name]
+    if meta.get("owner") == "org":
+        click.echo(
+            f"Error: '{name}' is managed by your organization "
+            f"({meta.get('org')}). Run `aidem server logout` to disconnect.",
+            err=True,
+        )
+        sys.exit(1)
     binary = meta.get("binary", name)
     runtime = meta.get("runtime", "uv")
 
@@ -686,6 +750,126 @@ def remove(name: str):
     if removed:
         msg += f" Removed {removed} file(s) from {kind_dir(kd)}."
     click.echo(msg)
+
+
+# ---------------------------------------------------------------------------
+# Enterprise server connection  (aidem server ...)
+# ---------------------------------------------------------------------------
+
+
+@cli.group()
+def server():
+    """Connect to an enterprise aidem server (SSO, org content, policy)."""
+    pass
+
+
+@server.command()
+@click.argument("url")
+@click.option("--device-code", is_flag=True, help="Headless login (no browser).")
+def login(url: str, device_code: bool):
+    """Log in to an enterprise aidem server via SSO and sync org content."""
+    from . import server_auth, server_state, server_sync
+    from .server_http import ServerError
+
+    server_url = _normalize_server_url(url)
+    try:
+        result = server_auth.login_flow(server_url, device_code=device_code)
+    except ServerError as exc:
+        click.echo(f"Error: login failed: {exc.message}", err=True)
+        sys.exit(1)
+    server_auth.store_credentials(server_url,
+                                  server_auth.credentials_payload(result))
+    server_state.save_state({
+        "server_url": server_url,
+        "org": result.get("org"),
+        "user": result.get("user", {}),
+        "policy": dict(server_state.DEFAULT_POLICY),
+        "content_sources": [],
+        "content_version": None,
+        "last_policy_check": None,
+        "last_sync": None,
+    })
+    user = result.get("user", {})
+    try:
+        linked, removed, mcp = server_sync.sync_org_content(echo=click.echo)
+    except ServerError as exc:
+        click.echo(
+            f"Logged in as {user.get('email')} ({result.get('org')}), but the "
+            f"initial sync failed: {exc.message}", err=True)
+        sys.exit(1)
+    click.echo(f"Logged in as {user.get('email')} (org: {result.get('org')}). "
+               f"Synced {linked} org item(s), removed {removed}, "
+               f"MCP entries {mcp}.")
+
+
+@server.command()
+def logout():
+    """Disconnect from the server and remove all org-managed content."""
+    from . import server_auth, server_state, server_sync
+
+    state = server_state.load_state()
+    if state is None:
+        click.echo("Not connected to an aidem server.")
+        return
+    org = state.get("org")
+    if not click.confirm(
+        f"Disconnect from {org} ({state['server_url']}) and remove org content?",
+        default=True,
+    ):
+        click.echo("Aborted.")
+        return
+    server_sync.remove_org_content(org)
+    server_auth.logout_remote_best_effort()
+    server_auth.clear_credentials()
+    server_state.clear_state()
+    click.echo(f"Disconnected from {org} ({state['server_url']}). "
+               f"Org content removed.")
+
+
+@server.command()
+def status():
+    """Show the server connection, policy, and session state (no network)."""
+    from . import server_auth, server_state
+
+    state = server_state.load_state()
+    if state is None:
+        click.echo("Not connected. Run `aidem server login <url>`.")
+        return
+    policy = server_state.load_policy()
+    user = state.get("user") or {}
+    click.echo(f"Server:   {state['server_url']}")
+    click.echo(f"Org:      {state.get('org')}")
+    click.echo(f"User:     {user.get('email', '?')} ({user.get('role', '?')})")
+    blocked = ", ".join(policy["blocked_commands"]) or "none"
+    click.echo(f"Policy:   {policy['mode']} (blocked: {blocked})")
+    click.echo(f"Last sync: {state.get('last_sync') or 'never'}")
+    click.echo(f"Session:  {server_auth.token_status()}")
+    sources = server_state.org_content_sources()
+    if sources:
+        click.echo("Content sources:")
+        for s in sources:
+            click.echo(f"  {s.get('name')} (kind={s.get('kind', 'skill')}) "
+                       f"{s.get('git_url')}")
+    else:
+        click.echo("Content sources: none")
+
+
+@server.command(name="sync")
+def sync_cmd():
+    """Pull the latest org policy and content from the server."""
+    from . import server_state, server_sync
+    from .server_http import ServerError
+
+    if not server_state.is_connected():
+        click.echo("Not connected. Run `aidem server login <url>`.", err=True)
+        sys.exit(1)
+    try:
+        linked, removed, mcp = server_sync.sync_org_content(echo=click.echo)
+    except ServerError as exc:
+        click.echo(f"Error: sync failed: {exc.message}", err=True)
+        sys.exit(1)
+    click.echo(f"Synced {linked} org item(s), removed {removed}, "
+               f"MCP entries {mcp}.")
 
 
 # ---------------------------------------------------------------------------
@@ -752,6 +936,7 @@ def setup():
         f"Refreshed libraries (skills: {linked} link(s), {mirrored} mirror(s); "
         f"rules: {rule_mirrored} mirror(s))."
     )
+    _sync_org_content_best_effort()
 
 
 # ---------------------------------------------------------------------------
@@ -775,6 +960,7 @@ def init(template: str, link: bool, force: bool, project_path: str):
     into cwd (especially the aidem package dir) is easy to do by accident, so
     aidem asks for confirmation unless --force is given.
     """
+    _enforce_policy("init")
     project = Path(project_path).resolve()
 
     defaulted = project_path in (".", "")
@@ -851,6 +1037,7 @@ def create(name: str, kind: str | None, body: str | None):
     $EDITOR (or prompts you to paste); pass --body "..." to provide it
     non-interactively.
     """
+    _enforce_policy("create")
     name = _validate_name(name)
     if kind is None:
         kind = "skill"
