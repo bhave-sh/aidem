@@ -173,7 +173,34 @@ User data (writable, persistent, `~/.aidem/` — overridable via `AIDEM_DATA_DIR
 
 ## Installation
 
-Requires Python 3.11+ and `uv`.
+Requires Python 3.11+. `uv` is required for aidem's isolated tool runtime.
+
+### Install from PyPI
+
+For an isolated global CLI, use `uv` or `pipx`:
+
+```bash
+uv tool install aidem
+# or: pipx install aidem
+```
+
+For a virtual environment with `pip`:
+
+```bash
+python3 -m venv .venv
+source .venv/bin/activate
+python -m pip install aidem
+```
+
+Verify the installation:
+
+```bash
+aidem --help
+```
+
+When using `pip`, activate the virtual environment before running `aidem`.
+
+### Install from source
 
 ```bash
 git clone https://github.com/bhave-sh/aidem.git ~/aidem
