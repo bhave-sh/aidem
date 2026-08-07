@@ -9,4 +9,4 @@ jobs:
         with:
           fetch-depth: 0
       - name: Check DCO sign-off
-        uses: oss-watch/action-dco@v1
+        uses: zephyrproject-rtos/action-dco@e3485a11e085fdc05fa4320e9cc3a86ccd665d89 # v1.0.0

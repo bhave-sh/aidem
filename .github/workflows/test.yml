@@ -24,3 +24,14 @@ jobs:
       - run: uv sync --extra dev
 
       - run: uv run pytest -v
+
+  test-summary:
+    name: Test
+    runs-on: ubuntu-latest
+    if: ${{ always() }}
+    needs: test
+    steps:
+      - name: Require test matrix success
+        if: ${{ needs.test.result != 'success' }}
+        run: exit 1
+      - run: echo "All test matrix jobs passed."
