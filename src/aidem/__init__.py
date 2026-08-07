@@ -11,4 +11,4 @@ AIDEM_DATA_DIR). Shipped package assets (generators, overlays, canonical
 AGENTS.md) travel with the install and are read-only.
 """
 
-__version__ = "0.1.0"
+__version__ = "0.1.1"
