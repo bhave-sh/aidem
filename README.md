@@ -99,7 +99,22 @@ The same model now extends to **rules** via `~/.aidem/rules/`. Rules have no cro
 
 Add/remove a rule in `~/.aidem/rules` and every bridged tool sees it on the next `aidem setup`.
 
-For repo-level standards, `aidem init <path>` writes a single `AGENTS.md`. Tools that read it natively (Cursor, Copilot, Kilo) consume it directly — no per-tool files, no duplication. Commit it so every contributor gets the standard on clone with **no aidem install required**.
+### Capability Coverage
+
+This matrix shows what Aidem currently syncs from its central libraries. It describes Aidem support, not every capability offered by each tool.
+
+| Tool | Skills | AGENTS.md | Rules | MCP | Memory | Transcripts | Hooks | Plans |
+|---|---|---|---|---|---|---|---|---|
+| Kilo | Done | Done | Done | Done | Planned | Planned | Planned | Planned |
+| Claude Code | Done | N/A | Done | Done | Planned | Planned | Planned | Planned |
+| Cursor | Done | Done | Planned | Done | Planned | Planned | Planned | Planned |
+| OpenCode | Done | Done | Done | Done | Planned | Planned | Planned | Planned |
+| Windsurf | Done | Done | Partial | Planned | Planned | Planned | Planned | Planned |
+| GitHub Copilot | Planned | Done | Planned | Planned | Planned | Planned | Planned | Planned |
+
+Status legend: `Done` is currently synced, `Partial` uses a tool-specific format or limitation, `Planned` is not synced yet, and `N/A` has no direct compatible location in the current bridge model.
+
+For repo-level standards, `aidem init <path>` writes a single `AGENTS.md`. Tools that read it natively (Cursor, Copilot, Kilo, OpenCode, Windsurf) consume it directly — no per-tool files, no duplication. Claude Code reads `CLAUDE.md` and can import or symlink `AGENTS.md`. Commit it so every contributor gets the standard on clone with **no aidem install required**.
 
 User data (`~/.aidem/`) is separated from the shipped package and survives upgrades. Override with `AIDEM_DATA_DIR`.
 
