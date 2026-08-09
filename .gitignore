@@ -13,21 +13,11 @@ build/
 dist/
 
 # Virtual environments
-.venv/
 venv/
 
-# IDE
-.vscode/
-.idea/
+# Ignore all dot folders except .github
+.*/
+!.github/
 
 # Folders
 tmp/
-
-# aidem generated project configs in test environments
-# (Only ignore if you don't want to commit tool configs in your own projects)
-# .cursor/
-# .claude/
-# .kilo/
-# .windsurfrules
-# AGENTS.md
-# CLAUDE.md
