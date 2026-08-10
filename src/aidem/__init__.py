@@ -10,4 +10,4 @@ AIDEM_DATA_DIR). Shipped package assets (generators and runtimes) travel with
 the install and are read-only.
 """
 
-__version__ = "0.1.3"
+__version__ = "0.1.4"

@@ -483,7 +483,7 @@ def _resolve_run_binary(meta: dict, name: str) -> tuple[str | None, bool]:
 
 
 @click.group()
-@click.version_option(version="0.1.3")
+@click.version_option(version="0.1.4")
 @click.pass_context
 def cli(ctx):
     """aidem: AI development environment manager."""
