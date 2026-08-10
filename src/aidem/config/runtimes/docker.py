@@ -10,12 +10,11 @@ from .base import Runtime
 
 
 class DockerRuntime(Runtime):
-    """Sandboxed tool env via Docker (ephemeral containers).
+    """Hardened tool env via Docker (ephemeral containers).
 
     For tools that ship a Dockerfile or a published image, aidem runs the tool
-    in an ephemeral ``docker run --rm`` container with the current working
-    directory mounted. No host Python/Rust/Node is required; isolation is
-    OS-level.
+    in an ephemeral, network-disabled, non-privileged container. The current
+    working directory is read-only by default; write access is explicit.
 
     Image source auto-heuristic: a manifest ``image`` takes precedence;
     otherwise, if the clone has a ``Dockerfile``, build ``aidem/<name>`` from
@@ -25,7 +24,12 @@ class DockerRuntime(Runtime):
     name = "docker"
 
     def _image(self) -> str:
-        return self.meta.get("image") or f"aidem/{self.meta.get('name', 'tool')}"
+        image = self.meta.get("image") or f"aidem/{self.meta.get('name', 'tool')}"
+        if not isinstance(image, str) or not image or image.startswith("-") or "\x00" in image:
+            raise RuntimeError("docker runtime: invalid image reference")
+        if self.meta.get("image") and "@sha256:" not in image:
+            raise RuntimeError("docker runtime: published images must use a digest")
+        return image
 
     def _dockerfile_present(self) -> bool:
         repo_path = self.meta.get("_repo_path")
@@ -39,7 +43,7 @@ class DockerRuntime(Runtime):
             raise RuntimeError("docker runtime: 'docker' not found on PATH")
         image = self.meta.get("image")
         if image:
-            subprocess.run(["docker", "pull", image], check=True)
+            subprocess.run(["docker", "pull", self._image()], check=True)
             return f"pulled {image}"
         if self._dockerfile_present():
             repo_path = self.meta.get("_repo_path")
@@ -65,10 +69,20 @@ class DockerRuntime(Runtime):
             )
         image = self._image()
         cwd = os.getcwd()
-        cmd = ["docker", "run", "--rm", "-v", f"{cwd}:/work", "-w", "/work"]
+        mode = "rw" if self.meta.get("write_worktree") else "ro"
+        cmd = [
+            "docker", "run", "--rm", "--read-only", "--network=none",
+            "--cap-drop=ALL", "--security-opt=no-new-privileges",
+            "--tmpfs", "/tmp:rw,noexec,nosuid,nodev",
+        ]
+        if hasattr(os, "getuid"):
+            cmd += ["--user", f"{os.getuid()}:{os.getgid()}"]
+        cmd += ["-v", f"{cwd}:/work:{mode}", "-w", "/work"]
         # Pass through a TTY when aidem's own stdin is interactive.
         if sys.stdin.isatty():
             cmd.append("-it")
+        if not self.binary_name or self.binary_name.startswith("-") or "\x00" in self.binary_name:
+            raise RuntimeError("docker runtime: invalid executable name")
         cmd += [image, self.binary_name] + list(args)
         os.execvp("docker", cmd)
         return 127
