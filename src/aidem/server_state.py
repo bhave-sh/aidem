@@ -21,9 +21,17 @@ from .paths import server_state_path
 # Commands the server may block in enforced mode. Reads, run, setup and all
 # server.* commands are never blockable.
 KNOWN_COMMAND_IDS = ("create", "registry.add", "registry.remove",
-                     "registry.update", "init")
+                     "registry.update")
 
 DEFAULT_POLICY = {"mode": "coexist", "blocked_commands": [], "allowed_hosts": []}
+
+
+def _fail_closed_policy() -> dict:
+    return {
+        "mode": "enforced",
+        "blocked_commands": list(KNOWN_COMMAND_IDS),
+        "allowed_hosts": [],
+    }
 
 
 def _now_iso() -> str:
@@ -81,26 +89,25 @@ def clear_state() -> None:
 def validate_policy(raw: object) -> dict:
     """Validate an untrusted policy payload from the server.
 
-    Fail-closed on shape: an unrecognized `mode` is treated as "enforced"
-    (with a warning) so a hostile/buggy server can't silently downgrade.
-    Fail-open on structure: a non-dict policy falls back to the coexist
-    default (with a warning) — the server is treated as broken and the user
-    is not locked out. Unknown keys and unknown command ids are ignored.
+    Malformed policies fail closed so a hostile/buggy server can't silently
+    downgrade enforcement. Unknown keys and unknown command ids are ignored.
     """
     if not isinstance(raw, dict):
-        warnings.warn("server policy is not an object; treating as coexist")
-        return dict(DEFAULT_POLICY)
+        warnings.warn("server policy is not an object; blocking policy commands")
+        return _fail_closed_policy()
     mode = raw.get("mode", "coexist")
     if mode not in ("coexist", "enforced"):
-        warnings.warn(f"unknown server policy mode {mode!r}; treating as enforced")
-        mode = "enforced"
+        warnings.warn(f"unknown server policy mode {mode!r}; blocking policy commands")
+        return _fail_closed_policy()
     blocked = raw.get("blocked_commands", [])
     if not isinstance(blocked, list):
-        blocked = []
+        warnings.warn("server policy blocked_commands is not a list; blocking policy commands")
+        return _fail_closed_policy()
     blocked = [c for c in blocked if isinstance(c, str) and c in KNOWN_COMMAND_IDS]
     hosts = raw.get("allowed_hosts", [])
     if not isinstance(hosts, list):
-        hosts = []
+        warnings.warn("server policy allowed_hosts is not a list; blocking policy commands")
+        return _fail_closed_policy()
     hosts = [h for h in hosts if isinstance(h, str) and h]
     return {"mode": mode, "blocked_commands": blocked, "allowed_hosts": hosts}
 

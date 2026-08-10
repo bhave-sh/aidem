@@ -1,10 +1,7 @@
 from __future__ import annotations
 
-import json
 import subprocess
 import tomllib
-import urllib.error
-import urllib.request
 from pathlib import Path
 
 from .base import Runtime
@@ -14,36 +11,12 @@ class UvVenvRuntime(Runtime):
     """Isolated Python tool env via ``uv venv`` + ``uv pip install``.
 
     aidem owns the env at ``~/.aidem/envs/<name>/`` and installs the tool's
-    package into it. The install *source* is decoupled from the git clone so a
-    prebuilt PyPI wheel is preferred over an editable-from-clone build (which
-    forces a local toolchain build for native-extension packages like headroom).
-
-    Two auto-heuristics (overridable via manifest keys / flags):
-      - **PyPI-wheel preference**: if the package is published on PyPI under a
-        name matching the repo, install ``<spec>[<extras>]`` from PyPI rather
-        than building the clone. Avoids Rust/C builds.
-      - **``[all]`` extras default**: if the clone's pyproject declares an
-        ``all`` optional-dependency group, default to installing ``[all]`` so
-        feature-rich tools work out of the box.
+    package into it. Without an explicit ``spec``, installation always targets
+    the checked-out repository so repository identity cannot silently switch to
+    an unrelated PyPI package.
     """
 
     name = "uv"
-
-    def _package_name(self) -> str | None:
-        """PyPI package name for the tool, from spec or the clone's pyproject."""
-        spec = self.meta.get("spec")
-        if spec:
-            return spec.split("[")[0].strip(" '\"")
-        repo_path = self.meta.get("_repo_path")
-        if repo_path:
-            pyproject = Path(repo_path) / "pyproject.toml"
-            if pyproject.exists():
-                try:
-                    data = tomllib.loads(pyproject.read_text())
-                    return data.get("project", {}).get("name")
-                except Exception:
-                    pass
-        return None
 
     def _detect_extras(self) -> str:
         """Default extras string: explicit 'all' if declared, else empty.
@@ -67,35 +40,26 @@ class UvVenvRuntime(Runtime):
                     pass
         return ""
 
-    def _on_pypi(self, package: str) -> bool:
-        """Whether <package> is published on PyPI (JSON API, 5s timeout)."""
-        url = f"https://pypi.org/pypi/{package}/json"
-        try:
-            req = urllib.request.Request(url, headers={"User-Agent": "aidem"})
-            with urllib.request.urlopen(req, timeout=5) as resp:
-                return resp.status == 200
-        except (urllib.error.URLError, urllib.error.HTTPError, OSError, TimeoutError):
-            return False
-
     def _install_command(self, source: str | None) -> list[str]:
         spec = self.meta.get("spec")
         if spec:
+            if (not isinstance(spec, str) or not spec or spec.startswith("-")
+                    or any(ord(char) < 32 for char in spec)):
+                raise RuntimeError("uv runtime: invalid explicit package spec")
             # An explicit spec carries its own extras; honor it verbatim.
             target = spec
             kind = "pypi"
         else:
-            pkg = self._package_name()
             extras = self._detect_extras()
-            extras_suffix = f"[{extras}]" if extras else ""
-            if pkg and self._on_pypi(pkg):
-                target = f"{pkg}{extras_suffix}"
-                kind = "pypi"
-            else:
-                repo_path = self.meta.get("_repo_path")
-                if not repo_path:
-                    raise RuntimeError("uv runtime: no spec and no clone to install from")
-                target = str(repo_path)
-                kind = "editable"
+            if not isinstance(extras, str) or any(ord(char) < 32 for char in extras):
+                raise RuntimeError("uv runtime: invalid extras value")
+            repo_path = self.meta.get("_repo_path")
+            if not repo_path:
+                raise RuntimeError("uv runtime: no spec and no clone to install from")
+            target = str(repo_path)
+            if extras:
+                target = f"{target}[{extras}]"
+            kind = "editable"
         self._last_kind = kind
         python = str(self.env_path / "bin" / "python")
         if kind == "pypi":

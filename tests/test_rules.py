@@ -186,8 +186,8 @@ def test_registry_add_kind_rule_links_flat_file(invoke, fake_dirs, rule_repo):
     res = invoke("registry", "add", str(rule_repo), "ext-rule", "--kind", "rule")
     assert res.exit_code == 0, res.output
     link = fake_dirs["rules"] / "ext-rule.md"
-    assert link.is_symlink()
-    assert link.resolve().name == "rule.md"
+    assert link.is_file() and not link.is_symlink()
+    assert link.read_text() == "# Rule: ext-rule\nAlways do X.\n"
     import json
     manifest = json.loads(fake_dirs["manifest"].read_text())
     assert manifest["ext-rule"]["kind"] == "rule"
@@ -196,8 +196,8 @@ def test_registry_add_kind_rule_links_flat_file(invoke, fake_dirs, rule_repo):
 def test_registry_add_kind_rule_multi_file(invoke, fake_dirs, multi_rule_repo):
     res = invoke("registry", "add", str(multi_rule_repo), "team", "--kind", "rule")
     assert res.exit_code == 0, res.output
-    assert (fake_dirs["rules"] / "team_style.md").is_symlink()
-    assert (fake_dirs["rules"] / "team_tests.md").is_symlink()
+    assert (fake_dirs["rules"] / "team_style.md").is_file()
+    assert (fake_dirs["rules"] / "team_tests.md").is_file()
 
 
 def test_registry_remove_kind_rule(invoke, fake_dirs, rule_repo):

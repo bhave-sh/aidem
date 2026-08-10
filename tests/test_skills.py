@@ -88,5 +88,23 @@ def test_skill_create_overwrite_prompt(invoke, fake_dirs):
 def test_setup_help_lists_commands(invoke):
     res = invoke("--help")
     assert res.exit_code == 0
-    for cmd in ("init", "setup", "run", "create", "registry"):
+    for cmd in ("setup", "run", "create", "registry"):
         assert cmd in res.output
+    assert "init" not in res.output
+
+
+def test_init_command_is_removed(invoke):
+    res = invoke("init")
+    assert res.exit_code != 0
+    assert "No such command" in res.output
+
+
+def test_setup_does_not_write_project_files(invoke, tmp_path, monkeypatch):
+    project = tmp_path / "project"
+    project.mkdir()
+    monkeypatch.chdir(project)
+
+    res = invoke("setup")
+
+    assert res.exit_code == 0, res.output
+    assert list(project.iterdir()) == []

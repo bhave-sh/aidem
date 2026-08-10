@@ -1,6 +1,6 @@
 [project]
 name = "aidem"
-version = "0.1.1"
+version = "0.1.2"
 description = "Universal AI development environment manager"
 readme = "README.md"
 license = "Apache-2.0"
@@ -17,7 +17,6 @@ keywords = [
     "skills",
     "rules",
     "mcp",
-    "agents-md",
 ]
 classifiers = [
     "Development Status :: 3 - Alpha",

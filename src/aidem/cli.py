@@ -3,22 +3,25 @@
 
 Layers:
   0. Registry  -- git clone skill/tool repos and (optionally) install binaries via uv.
-  1. Bridging  -- one-time dir symlinks from each IDE's skills dir into ~/.aidem/skills;
-                 plus repo init (a single committed AGENTS.md).
+  1. Bridging  -- one-time dir symlinks from each IDE's skills dir into ~/.aidem/skills.
   2. Execution -- pass-through run of registered tools in isolated uv environments.
 
 User data (skills, registry, manifest) lives in ~/.aidem (overridable via
-AIDEM_DATA_DIR). Shipped package assets (generators, overlays, canonical
-AGENTS.md) travel with the install and are read-only.
+AIDEM_DATA_DIR). Shipped package assets (generators and runtimes) travel with
+the install and are read-only.
 """
 
 import json
 import os
+import re
 import shutil
+import stat
 import subprocess
 import sys
+import tempfile
 import tomllib
 from pathlib import Path
+from urllib.parse import urlsplit
 
 import click
 
@@ -31,8 +34,6 @@ from .paths import (
     rules_dir as user_rules_dir,
     kind_dir,
     REGISTRY_KINDS,
-    overlays_dir,
-    canonical_agents,
     ensure_data_dirs,
     PACKAGE_ROOT,
 )
@@ -41,6 +42,7 @@ from . import paths as aidem_paths  # noqa: F401  (re-exported for tests)
 
 # Skill file names scanned for in a registered repo (checked in order).
 SKILL_FILE_CANDIDATES = ("skill.md", "SKILL.md", "SKILL.MD")
+SKILL_SUPPORT_DIRS = {"references", "scripts", "assets", "rules"}
 
 # Rule file names scanned for in a registered rule repo (checked in order).
 RULE_FILE_CANDIDATES = ("rule.md", "RULE.md")
@@ -77,10 +79,24 @@ def _enforce_policy(command_id: str, *, url: str | None = None) -> None:
 
 
 def _normalize_server_url(url: str) -> str:
-    """Normalize a server URL: scheme required (default https), no trailing /."""
+    """Normalize a server URL, allowing HTTP only for loopback development."""
     url = url.strip()
     if "://" not in url:
         url = "https://" + url
+    try:
+        parsed = urlsplit(url)
+        hostname = parsed.hostname
+        parsed.port
+    except ValueError as exc:
+        raise click.BadParameter("invalid server URL") from exc
+    if not hostname or parsed.username or parsed.password:
+        raise click.BadParameter("server URL must contain a host and no credentials")
+    if parsed.scheme.lower() != "https":
+        if not (parsed.scheme.lower() == "http" and
+                hostname.lower() in {"127.0.0.1", "::1", "localhost"}):
+            raise click.BadParameter(
+                "server URL must use HTTPS (HTTP is allowed only on loopback)"
+            )
     return url.rstrip("/")
 
 
@@ -112,13 +128,6 @@ def load_manifest() -> dict:
 def save_manifest(manifest: dict) -> None:
     ensure_data_dirs()
     manifest_path().write_text(json.dumps(manifest, indent=2))
-
-
-def _resolve_agents_source(template: str) -> Path:
-    overlay = overlays_dir() / template / "AGENTS.md"
-    if overlay.exists():
-        return overlay
-    return canonical_agents()
 
 
 def _detect_runtime(tool_path: Path) -> str | None:
@@ -170,17 +179,104 @@ def _content_source_for(repo_path: Path, kind: str) -> Path | None:
     return None
 
 
-def _symlink_sibling_dirs(skill_dir: Path, source_parent: Path) -> None:
-    for item in source_parent.iterdir():
-        if not item.is_dir() or item.name == ".git":
+def _copy_regular_tree(source: Path, target: Path) -> None:
+    """Copy content without following symlinks or special files."""
+    try:
+        mode = source.lstat().st_mode
+    except OSError as exc:
+        raise ValueError(f"cannot inspect content source {source}: {exc}") from exc
+    if stat.S_ISLNK(mode):
+        raise ValueError(f"refusing symlinked content source: {source}")
+    if stat.S_ISREG(mode):
+        target.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copy2(source, target)
+        return
+    if not stat.S_ISDIR(mode):
+        raise ValueError(f"refusing special content source: {source}")
+
+    target.mkdir(parents=True, exist_ok=True)
+    for item in source.iterdir():
+        if item.name == ".git":
             continue
-        dest = skill_dir / item.name
-        if dest.exists() or dest.is_symlink():
-            if dest.is_symlink():
-                dest.unlink()
-            elif dest.is_dir():
-                shutil.rmtree(dest)
-        dest.symlink_to(item)
+        _copy_regular_tree(item, target / item.name)
+
+
+def _path_contains_symlink(root: Path, path: Path) -> bool:
+    current = root
+    try:
+        parts = path.relative_to(root).parts
+    except ValueError:
+        return True
+    for part in parts:
+        current /= part
+        if current.is_symlink():
+            return True
+    return False
+
+
+def _copy_skill_support_dirs(source_parent: Path, target: Path) -> None:
+    for item in source_parent.iterdir():
+        if item.is_dir() and item.name in SKILL_SUPPORT_DIRS:
+            _copy_regular_tree(item, target / item.name)
+
+
+def _materialize_skill_entry(name: str, source: Path, staging_root: Path) -> bool:
+    if source.is_symlink():
+        raise ValueError(f"refusing symlinked skill source: {source}")
+    skill_dir = staging_root / name
+    skill_dir.mkdir(parents=True, exist_ok=True)
+    if source.is_dir():
+        md_files = sorted(source.glob("*.md"))
+        if md_files:
+            if any(_path_contains_symlink(source, f) for f in md_files):
+                raise ValueError(f"refusing symlinked skill content under {source}")
+            _copy_regular_tree(md_files[-1], skill_dir / "SKILL.md")
+            _copy_skill_support_dirs(source, skill_dir)
+            return True
+        added = False
+        for f in sorted(source.glob("**/SKILL.md")):
+            if f.is_symlink() or _path_contains_symlink(source, f):
+                raise ValueError(f"refusing symlinked skill source: {f}")
+            sub = f.parent.name
+            nested_dir = staging_root / f"{name}_{sub}"
+            nested_dir.mkdir(parents=True, exist_ok=True)
+            _copy_regular_tree(f, nested_dir / "SKILL.md")
+            _copy_skill_support_dirs(f.parent, nested_dir)
+            added = True
+        return added
+
+    _copy_regular_tree(source, skill_dir / "SKILL.md")
+    _copy_skill_support_dirs(source.parent, skill_dir)
+    return True
+
+
+def _replace_materialized_entries(staging_root: Path, target_dir: Path, name: str) -> int:
+    entries = [p for p in staging_root.iterdir() if p.name == name or p.name.startswith(f"{name}_")]
+    if not entries:
+        return 0
+    old_entries = [target_dir / name, target_dir / f"{name}.md"] + list(target_dir.glob(f"{name}_*"))
+    backup_root = Path(tempfile.mkdtemp(prefix=f".{name}.backup.", dir=target_dir))
+    moved_new: list[Path] = []
+    try:
+        for old in old_entries:
+            if old.exists() or old.is_symlink():
+                os.replace(old, backup_root / old.name)
+        for entry in entries:
+            destination = target_dir / entry.name
+            os.replace(entry, destination)
+            moved_new.append(destination)
+    except Exception:
+        for destination in moved_new:
+            if destination.is_symlink() or destination.is_file():
+                destination.unlink()
+            elif destination.is_dir():
+                shutil.rmtree(destination)
+        for old in backup_root.iterdir():
+            os.replace(old, target_dir / old.name)
+        raise
+    finally:
+        shutil.rmtree(backup_root, ignore_errors=True)
+    return len(entries)
 
 
 def _add_shared_skill(name: str, source: Path, target_dir: Path | None = None) -> bool:
@@ -188,47 +284,15 @@ def _add_shared_skill(name: str, source: Path, target_dir: Path | None = None) -
         target_dir = user_skills_dir()
     target_dir.mkdir(parents=True, exist_ok=True)
 
-    old_flat = target_dir / f"{name}.md"
-    if old_flat.exists() or old_flat.is_symlink():
-        old_flat.unlink()
-    for old in target_dir.glob(f"{name}_*.md"):
-        if old.is_symlink() or old.exists():
-            old.unlink()
-
-    if source.is_dir():
-        added = False
-        md_files = sorted(source.glob("*.md"))
-        if md_files:
-            for f in md_files:
-                skill_dir = target_dir / name
-                skill_dir.mkdir(parents=True, exist_ok=True)
-                link = skill_dir / "SKILL.md"
-                if link.exists() or link.is_symlink():
-                    link.unlink()
-                link.symlink_to(f)
-                _symlink_sibling_dirs(skill_dir, source)
-                added = True
+    staging_root = Path(tempfile.mkdtemp(prefix=f".{name}.", dir=target_dir))
+    try:
+        added = _materialize_skill_entry(name, source, staging_root)
         if not added:
-            for f in sorted(source.glob("**/SKILL.md")):
-                sub = f.parent.name
-                skill_dir = target_dir / f"{name}_{sub}"
-                skill_dir.mkdir(parents=True, exist_ok=True)
-                link = skill_dir / "SKILL.md"
-                if link.exists() or link.is_symlink():
-                    link.unlink()
-                link.symlink_to(f)
-                _symlink_sibling_dirs(skill_dir, f.parent)
-                added = True
-        return added
-
-    skill_dir = target_dir / name
-    skill_dir.mkdir(parents=True, exist_ok=True)
-    link = skill_dir / "SKILL.md"
-    if link.exists() or link.is_symlink():
-        link.unlink()
-    link.symlink_to(source)
-    _symlink_sibling_dirs(skill_dir, source.parent)
-    return True
+            return False
+        _replace_materialized_entries(staging_root, target_dir, name)
+        return True
+    finally:
+        shutil.rmtree(staging_root, ignore_errors=True)
 
 
 def _add_shared_rule(name: str, source: Path, target_dir: Path) -> bool:
@@ -238,27 +302,45 @@ def _add_shared_rule(name: str, source: Path, target_dir: Path) -> bool:
     <name>_<stem>.md when a repo contributes multiple rule files).
     """
     target_dir.mkdir(parents=True, exist_ok=True)
-    for old in [target_dir / f"{name}.md"] + list(target_dir.glob(f"{name}_*.md")):
-        if old.is_symlink() or old.exists():
-            old.unlink()
-
-    if source.is_dir():
-        added = False
-        for f in sorted(source.glob("*.md")):
-            stem = f.stem
-            link_name = f"{name}.md" if stem.lower() == name.lower() else f"{name}_{stem}.md"
-            link = target_dir / link_name
-            if link.exists() or link.is_symlink():
-                link.unlink()
-            link.symlink_to(f)
+    staging_root = Path(tempfile.mkdtemp(prefix=f".{name}.", dir=target_dir))
+    try:
+        if source.is_symlink():
+            raise ValueError(f"refusing symlinked rule source: {source}")
+        if source.is_dir():
+            added = False
+            for f in sorted(source.glob("*.md")):
+                stem = f.stem
+                link_name = f"{name}.md" if stem.lower() == name.lower() else f"{name}_{stem}.md"
+                _copy_regular_tree(f, staging_root / link_name)
+                added = True
+        else:
+            _copy_regular_tree(source, staging_root / f"{name}.md")
             added = True
-        return added
-
-    link = target_dir / f"{name}.md"
-    if link.exists() or link.is_symlink():
-        link.unlink()
-    link.symlink_to(source)
-    return True
+        if not added:
+            return False
+        old_files = [target_dir / f"{name}.md"] + list(target_dir.glob(f"{name}_*.md"))
+        backup_root = Path(tempfile.mkdtemp(prefix=f".{name}.backup.", dir=target_dir))
+        moved_new: list[Path] = []
+        try:
+            for old in old_files:
+                if old.is_symlink() or old.exists():
+                    os.replace(old, backup_root / old.name)
+            for entry in staging_root.iterdir():
+                destination = target_dir / entry.name
+                os.replace(entry, destination)
+                moved_new.append(destination)
+        except Exception:
+            for destination in moved_new:
+                if destination.is_symlink() or destination.is_file():
+                    destination.unlink()
+            for old in backup_root.iterdir():
+                os.replace(old, target_dir / old.name)
+            raise
+        finally:
+            shutil.rmtree(backup_root, ignore_errors=True)
+        return True
+    finally:
+        shutil.rmtree(staging_root, ignore_errors=True)
 
 
 def _add_shared_content(name: str, source: Path, kind: str) -> bool:
@@ -277,7 +359,10 @@ def _remove_shared_skill(name: str, target_dir: Path | None = None) -> int:
             f.unlink()
             removed += 1
     for d in [target_dir / name] + list(target_dir.glob(f"{name}_*")):
-        if d.is_dir():
+        if d.is_symlink():
+            d.unlink()
+            removed += 1
+        elif d.is_dir():
             shutil.rmtree(d)
             removed += 1
     return removed
@@ -309,14 +394,18 @@ def _regenerate_rule_mirrors() -> int:
     return regenerate_all_rule_mirrors(PACKAGE_ROOT / "config")
 
 
-def _refresh_content_links() -> int:
+def _refresh_content() -> int:
     count = 0
     for name, meta in load_manifest().items():
         repo_path = _repo_abs_path(meta["path"])
         source = _content_source_for(repo_path, meta.get("kind") or meta.get("category", "skill"))
         kd = meta.get("kind") or meta.get("category", "skill")
-        if source is not None and _add_shared_content(name, source, kd):
-            count += 1
+        if source is not None:
+            try:
+                if _add_shared_content(name, source, kd):
+                    count += 1
+            except ValueError as exc:
+                click.echo(f"Warning: skipped unsafe content for '{name}': {exc}", err=True)
     return count
 
 
@@ -394,7 +483,7 @@ def _resolve_run_binary(meta: dict, name: str) -> tuple[str | None, bool]:
 
 
 @click.group()
-@click.version_option(version="0.1.1")
+@click.version_option(version="0.1.2")
 @click.pass_context
 def cli(ctx):
     """aidem: AI development environment manager."""
@@ -427,34 +516,40 @@ def registry():
 @click.option("--kind", default="skill", type=click.Choice(REGISTRY_KINDS, case_sensitive=False),
               help="Content kind: skill, rule, mcp, memory, or plan.")
 @click.option("--runtime", "runtime_opt", default=None,
-              type=click.Choice(RUNTIME_KINDS + DEFERRED_RUNTIMES, case_sensitive=False),
-              help="Execution runtime: uv (default for Python), binary (prebuilt release "
-                   "asset), docker (sandboxed container). Override the auto-detected default.")
+               type=click.Choice(RUNTIME_KINDS + DEFERRED_RUNTIMES, case_sensitive=False),
+               help="Execution runtime: uv (default for Python), binary (prebuilt release "
+                    "asset), docker (hardened container). Override the auto-detected default.")
 @click.option("--spec", "spec", default=None,
-              help="uv runtime: PyPI install spec (e.g. 'headroom-ai[all]'). Defaults to the "
-                   "clone's package name; prefer a published wheel over an editable build.")
+               help="uv runtime: explicit PyPI install spec (e.g. 'headroom-ai[all]'). "
+                    "Without this, install the checked-out clone.")
 @click.option("--extras", "extras", default=None,
               help="uv runtime: optional-dependency group(s) to install (e.g. 'all', 'proxy'). "
                    "Defaults to 'all' if the clone declares it.")
 @click.option("--asset", "asset", default=None,
-              help="binary runtime: release-asset name substring/glob to pick (e.g. "
-                   "'rtk-aarch64-apple-darwin'). Defaults to a platform-matching heuristic.")
+               help="binary runtime: release-asset name substring to pick (e.g. "
+                    "'rtk-aarch64-apple-darwin').")
+@click.option("--release", "release", default=None,
+               help="binary runtime: immutable GitHub release tag to install.")
+@click.option("--sha256", "sha256", default=None,
+               help="binary runtime: required SHA-256 digest for the release asset.")
 @click.option("--image", "image", default=None,
-              help="docker runtime: published image ref to pull (e.g. 'ghcr.io/org/tool:latest'). "
-                   "Defaults to building the clone's Dockerfile as aidem/<name>.")
+               help="docker runtime: digest-pinned image ref to pull (e.g. 'ghcr.io/org/tool@sha256:...'). "
+                    "Defaults to building the clone's Dockerfile as aidem/<name>.")
+@click.option("--write-worktree", is_flag=True,
+               help="docker runtime: allow the container to write the current worktree.")
 @click.option("--no-install", is_flag=True,
               help="Register the repo without installing the binary now. Install later with "
                    "`aidem registry install <name>`.")
 def add(git_url: str, name: str, kind: str, runtime_opt: str | None,
-        spec: str | None, extras: str | None, asset: str | None, image: str | None,
-        no_install: bool):
+        spec: str | None, extras: str | None, asset: str | None, release: str | None,
+        sha256: str | None, image: str | None, write_worktree: bool, no_install: bool):
     """Clone a skill/tool repo into ~/.aidem/registry and register it.
 
     aidem detects a default runtime from file markers (pyproject.toml -> uv,
     Cargo.toml/go.mod -> binary, Dockerfile -> docker) and installs the tool
     into an aidem-owned, isolated env at ~/.aidem/envs/<name>/ — never onto the
     global PATH. Override the runtime with --runtime, and pass runtime-specific
-    hints (--spec/--extras, --asset, --image) when the auto-heuristic needs help.
+    hints (--spec/--extras, --asset, --release/--sha256, --image) when needed.
     """
     _enforce_policy("registry.add", url=git_url)
     name = _validate_name(name)
@@ -469,7 +564,7 @@ def add(git_url: str, name: str, kind: str, runtime_opt: str | None,
         sys.exit(1)
 
     try:
-        subprocess.run(["git", "clone", git_url, str(target)], check=True)
+        subprocess.run(["git", "clone", "--", git_url, str(target)], check=True)
     except subprocess.CalledProcessError as exc:
         click.echo(f"Failed to clone: {exc}", err=True)
         sys.exit(1)
@@ -511,6 +606,19 @@ def add(git_url: str, name: str, kind: str, runtime_opt: str | None,
             default=name,
         ) if not binary else binary
 
+    if runtime == "binary" and (not release or not sha256):
+        shutil.rmtree(target, ignore_errors=True)
+        click.echo("Binary registration requires both --release and --sha256.", err=True)
+        sys.exit(1)
+    if runtime == "binary" and (
+        "\x00" in release or "\n" in release or release.startswith("-")
+        or re.fullmatch(r"[0-9a-fA-F]{64}", sha256) is None
+    ):
+        shutil.rmtree(target, ignore_errors=True)
+        click.echo("Binary registration requires a safe release tag and 64-character SHA-256.",
+                   err=True)
+        sys.exit(1)
+
     manifest = load_manifest()
     entry: dict = {
         "path": _repo_rel_path(target),
@@ -525,11 +633,21 @@ def add(git_url: str, name: str, kind: str, runtime_opt: str | None,
         entry["extras"] = extras
     if asset:
         entry["asset"] = asset
+    if release:
+        entry["release"] = release
+    if sha256:
+        entry["sha256"] = sha256
     if image:
         entry["image"] = image
-    manifest[name] = entry
-    save_manifest(manifest)
-
+    if write_worktree:
+        entry["write_worktree"] = True
+    if binary and runtime in RUNTIME_KINDS and not no_install:
+        if not click.confirm(
+            f"Install '{name}' now from the registered source?",
+            default=False,
+        ):
+            no_install = True
+            click.echo("Registered without installation. Run `aidem registry install` later.")
     if binary and runtime in RUNTIME_KINDS and not no_install:
         meta = dict(entry)
         meta["name"] = name
@@ -544,13 +662,21 @@ def add(git_url: str, name: str, kind: str, runtime_opt: str | None,
     source = _content_source_for(target, kind)
     if source is not None:
         target_dir = kind_dir(kind)
-        _add_shared_content(name, source, kind)
+        try:
+            _add_shared_content(name, source, kind)
+        except ValueError as exc:
+            shutil.rmtree(target, ignore_errors=True)
+            click.echo(f"Refusing unsafe {kind} content: {exc}", err=True)
+            sys.exit(1)
         mirrored = _regenerate_mirrors()
         rule_mirrored = _regenerate_rule_mirrors()
         click.echo(
             f"Linked {kind} '{name}' into {target_dir} "
             f"({mirrored} skill mirror(s), {rule_mirrored} rule mirror(s))."
         )
+
+    manifest[name] = entry
+    save_manifest(manifest)
 
     label = kind if not binary else "tool"
     click.echo(f"Added {label} '{name}' (kind={kind}, runtime={runtime}). "
@@ -567,7 +693,7 @@ def setup():
         if not tool_path.exists():
             try:
                 subprocess.run(
-                    ["git", "clone", meta["source"], str(tool_path)], check=True
+                    ["git", "clone", "--", meta["source"], str(tool_path)], check=True
                 )
             except subprocess.CalledProcessError as exc:
                 click.echo(f"Failed to clone {name}: {exc}", err=True)
@@ -578,6 +704,12 @@ def setup():
         if binary and runtime in RUNTIME_KINDS:
             rt = _runtime_for({**meta, "name": name, "_repo_path": str(tool_path)}, name)
             if not rt.is_installed():
+                if not click.confirm(
+                    f"Install '{name}' from the registered source now?",
+                    default=False,
+                ):
+                    click.echo(f"  {name}: installation skipped.")
+                    continue
                 try:
                     msg = rt.install(meta.get("source"))
                     click.echo(f"  {name}: {msg}")
@@ -589,11 +721,11 @@ def setup():
             click.echo(f"  {name}: skills-only repo, no binary to install.")
 
     # Reconcile content links and mirrors.
-    linked = _refresh_content_links()
+    linked = _refresh_content()
     mirrored = _regenerate_mirrors()
     rule_mirrored = _regenerate_rule_mirrors()
     click.echo(
-        f"Registry setup complete ({linked} link(s), {mirrored} skill mirror(s), "
+        f"Registry setup complete ({linked} content item(s), {mirrored} skill mirror(s), "
         f"{rule_mirrored} rule mirror(s))."
     )
 
@@ -614,11 +746,13 @@ def update():
             subprocess.run(["git", "pull", "--ff-only"], cwd=tool_path, check=True)
         except subprocess.CalledProcessError as exc:
             click.echo(f"Failed to update {name}: {exc}", err=True)
+    linked = _refresh_content()
     mirrored = _regenerate_mirrors()
     rule_mirrored = _regenerate_rule_mirrors()
     click.echo(
-        f"Registry updated ({mirrored} skill mirror(s), {rule_mirrored} rule mirror(s)). "
-        f"Run `aidem setup` to refresh links/mirrors."
+        f"Registry updated ({linked} content item(s), {mirrored} skill mirror(s), "
+        f"{rule_mirrored} rule mirror(s)). "
+        f"Run `aidem setup` to refresh tool bridges/mirrors."
     )
     _sync_org_content_best_effort()
 
@@ -766,7 +900,9 @@ def server():
 @server.command()
 @click.argument("url")
 @click.option("--device-code", is_flag=True, help="Headless login (no browser).")
-def login(url: str, device_code: bool):
+@click.option("--allow-org-mcp", is_flag=True,
+              help="Enable validated organization MCP definitions during initial sync.")
+def login(url: str, device_code: bool, allow_org_mcp: bool):
     """Log in to an enterprise aidem server via SSO and sync org content."""
     from . import server_auth, server_state, server_sync
     from .server_http import ServerError
@@ -791,7 +927,9 @@ def login(url: str, device_code: bool):
     })
     user = result.get("user", {})
     try:
-        linked, removed, mcp = server_sync.sync_org_content(echo=click.echo)
+        linked, removed, mcp = server_sync.sync_org_content(
+            echo=click.echo, allow_mcp=allow_org_mcp
+        )
     except ServerError as exc:
         click.echo(
             f"Logged in as {user.get('email')} ({result.get('org')}), but the "
@@ -855,7 +993,9 @@ def status():
 
 
 @server.command(name="sync")
-def sync_cmd():
+@click.option("--allow-org-mcp", is_flag=True,
+              help="Enable validated organization MCP definitions during this sync.")
+def sync_cmd(allow_org_mcp: bool):
     """Pull the latest org policy and content from the server."""
     from . import server_state, server_sync
     from .server_http import ServerError
@@ -864,7 +1004,9 @@ def sync_cmd():
         click.echo("Not connected. Run `aidem server login <url>`.", err=True)
         sys.exit(1)
     try:
-        linked, removed, mcp = server_sync.sync_org_content(echo=click.echo)
+        linked, removed, mcp = server_sync.sync_org_content(
+            echo=click.echo, allow_mcp=allow_org_mcp
+        )
     except ServerError as exc:
         click.echo(f"Error: sync failed: {exc.message}", err=True)
         sys.exit(1)
@@ -911,7 +1053,7 @@ def setup():
     )
 
     ensure_data_dirs()
-    linked = _refresh_content_links()
+    linked = _refresh_content()
 
     skills = shared_skills_dir(PACKAGE_ROOT / "config")
     if not any(skills.iterdir()) and linked == 0:
@@ -933,78 +1075,14 @@ def setup():
     for warning in collect_rule_warnings(PACKAGE_ROOT / "config"):
         click.echo(f"  [warn] {warning}")
     click.echo(
-        f"Refreshed libraries (skills: {linked} link(s), {mirrored} mirror(s); "
+        f"Refreshed libraries (skills: {linked} content item(s), {mirrored} mirror(s); "
         f"rules: {rule_mirrored} mirror(s))."
     )
     _sync_org_content_best_effort()
 
 
 # ---------------------------------------------------------------------------
-# Layer 1B: Repo init  (aidem init)  — single AGENTS.md
-# ---------------------------------------------------------------------------
-
-
-@cli.command()
-@click.option("--template", default="default", help="Template/overlay name to apply.")
-@click.option("--link/--copy", default=False, help="Symlink AGENTS.md to canonical (default: copy).")
-@click.option("--force", is_flag=True, help="Skip the cwd confirmation prompt.")
-@click.argument("project_path", default=".")
-def init(template: str, link: bool, force: bool, project_path: str):
-    """Write a single AGENTS.md into a repo (the portable team standard).
-
-    aidem does NOT pollute the repo with per-tool config files. Tools that read
-    AGENTS.md natively (Cursor, Copilot, Kilo) get it for free. Your personal
-    skills are bridged globally via `aidem setup`, not committed per-repo.
-
-    When PROJECT_PATH is omitted aidem defaults to the current directory. Writing
-    into cwd (especially the aidem package dir) is easy to do by accident, so
-    aidem asks for confirmation unless --force is given.
-    """
-    _enforce_policy("init")
-    project = Path(project_path).resolve()
-
-    defaulted = project_path in (".", "")
-    if defaulted and not force:
-        if project == PACKAGE_ROOT:
-            click.echo(
-                "Refusing to write AGENTS.md into the aidem package dir by default. "
-                "Pass an explicit path, or use --force to proceed.",
-                err=True,
-            )
-            sys.exit(1)
-        if not click.confirm(
-            f"Write AGENTS.md into the current directory ({project})?",
-            default=False,
-        ):
-            click.echo("Aborted.")
-            sys.exit(1)
-
-    project.mkdir(parents=True, exist_ok=True)
-
-    agents_source = _resolve_agents_source(template)
-    if not agents_source.exists():
-        click.echo(f"Error: template '{template}' not found.", err=True)
-        sys.exit(1)
-
-    target = project / "AGENTS.md"
-    if target.exists() and not target.is_symlink():
-        click.echo(f"Warning: {target} already exists; overwriting.", err=True)
-
-    if target.exists() or target.is_symlink():
-        target.unlink()
-
-    if link:
-        target.symlink_to(agents_source)
-        mode = "link"
-    else:
-        shutil.copy2(agents_source, target)
-        mode = "copy"
-
-    click.echo(f"Wrote AGENTS.md to {project} (template '{template}', {mode}).")
-
-
-# ---------------------------------------------------------------------------
-# Layer 1C: Content authoring  (aidem create ...)
+# Layer 1B: Content authoring  (aidem create ...)
 # ---------------------------------------------------------------------------
 
 
