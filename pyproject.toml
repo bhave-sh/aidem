@@ -17,7 +17,6 @@ keywords = [
     "skills",
     "rules",
     "mcp",
-    "agents-md",
 ]
 classifiers = [
     "Development Status :: 3 - Alpha",

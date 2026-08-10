@@ -3,7 +3,7 @@
 aidem distinguishes two kinds of paths:
 
 - **Package paths** (shipped, read-only, live next to the installed CLI):
-  generators, overlays, the canonical AGENTS.md template.
+  generators and runtimes.
 - **Data paths** (user-writable, persistent, survive upgrades): the shared
   content libraries (skills, rules, mcp, memory, plans), the registry
   manifest and its git submodules.
@@ -46,11 +46,6 @@ def data_dir() -> Path:
     if env:
         return Path(env).expanduser()
     return Path.home() / ".aidem"
-
-
-def config_dir() -> Path:
-    """The shipped package config dir (read-only overlays + canonical AGENTS.md)."""
-    return PACKAGE_ROOT / "config"
 
 
 def kind_dir(kind: str) -> Path:
@@ -97,6 +92,8 @@ def envs_dir() -> Path:
 
 def env_dir(name: str) -> Path:
     """Isolated environment directory for a registered tool by name."""
+    if not isinstance(name, str) or not name or ".." in name or "/" in name or "\\" in name:
+        raise ValueError(f"invalid environment name: {name!r}")
     return envs_dir() / name
 
 
@@ -133,16 +130,6 @@ def org_root(org: str) -> Path:
 def org_registry_dir(org: str) -> Path:
     """Org content clone storage (~/.aidem/org/<org>/registry)."""
     return org_root(org) / "registry"
-
-
-def overlays_dir() -> Path:
-    """Shipped package overlays (read-only project-type AGENTS.md templates)."""
-    return config_dir() / "overlays"
-
-
-def canonical_agents() -> Path:
-    """Shipped canonical AGENTS.md (read-only template source)."""
-    return config_dir() / "AGENTS.md"
 
 
 def ensure_data_dirs() -> None:

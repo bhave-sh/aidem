@@ -22,6 +22,8 @@ def skill_repo(tmp_path):
     (repo / "skill.md").write_text(
         "# Skill: external-demo\n## Purpose\nDemo external skill.\n"
     )
+    (repo / "src").mkdir()
+    (repo / "src" / "internal.py").write_text("not shared skill content\n")
     _init_git_repo(repo)
     return repo
 
@@ -61,11 +63,12 @@ def test_registry_add_skill_repo_bridges_skill(invoke, fake_dirs, skill_repo):
     assert res.exit_code == 0, res.output
     # Cloned into the data dir registry under kind=skill (the default).
     assert (fake_dirs["registry"] / "skill" / "external-demo" / "skill.md").exists()
-    # Skill linked into shared library as a directory with SKILL.md inside.
+    # Skill is materialized into the shared library as regular content.
     skill_dir = fake_dirs["skills"] / "external-demo"
     link = skill_dir / "SKILL.md"
-    assert link.is_symlink()
-    assert link.resolve().name == "skill.md"
+    assert link.is_file() and not link.is_symlink()
+    assert link.read_text().startswith("# Skill: external-demo")
+    assert not (skill_dir / "src").exists()
     # Manifest records the entry with kind=skill.
     import json
     manifest = json.loads(fake_dirs["manifest"].read_text())
@@ -81,14 +84,44 @@ def test_registry_add_nested_skill_symlinks_subdirs(invoke, fake_dirs, nested_sk
     skill_dir = fake_dirs["skills"] / "project-codeguard_codeguard"
     assert skill_dir.is_dir()
     sk_link = skill_dir / "SKILL.md"
-    assert sk_link.is_symlink()
-    assert sk_link.resolve().name == "SKILL.md"
-    # rules/ subdirectory must be symlinked.
+    assert sk_link.is_file() and not sk_link.is_symlink()
+    # Supporting directories are copied, not symlinked.
     rules_link = skill_dir / "rules"
-    assert rules_link.is_symlink()
-    # The individual rule files must be accessible through the symlink.
+    assert rules_link.is_dir() and not rules_link.is_symlink()
+    # The individual rule files are regular copied files.
     assert (rules_link / "codeguard-1-hardcoded-credentials.md").exists()
     assert (rules_link / "codeguard-0-input-validation-injection.md").exists()
+    assert not (rules_link / "codeguard-1-hardcoded-credentials.md").is_symlink()
+
+
+def test_registry_update_refreshes_materialized_skill(invoke, fake_dirs, skill_repo):
+    assert invoke("registry", "add", str(skill_repo), "external-demo").exit_code == 0
+    (skill_repo / "skill.md").write_text("# Skill: external-demo\nUpdated.\n")
+    subprocess.run(["git", "add", "."], cwd=skill_repo, check=True)
+    subprocess.run(["git", "commit", "-qm", "update"], cwd=skill_repo, check=True)
+
+    res = invoke("registry", "update")
+
+    assert res.exit_code == 0, res.output
+    copied = fake_dirs["skills"] / "external-demo" / "SKILL.md"
+    assert copied.read_text() == "# Skill: external-demo\nUpdated.\n"
+    assert not copied.is_symlink()
+
+
+def test_registry_rejects_external_skill_symlink(invoke, fake_dirs, tmp_path):
+    repo = tmp_path / "symlink-repo"
+    repo.mkdir()
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    (outside / "secret.md").write_text("not skill content")
+    (repo / "skill.md").write_text("# Skill: safe\n")
+    (repo / "references").symlink_to(outside, target_is_directory=True)
+    _init_git_repo(repo)
+
+    res = invoke("registry", "add", str(repo), "symlink-demo")
+
+    assert res.exit_code != 0
+    assert not (fake_dirs["skills"] / "symlink-demo").exists()
 
 
 def test_registry_list_shows_skill(invoke, skill_repo):

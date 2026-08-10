@@ -10,6 +10,7 @@ import urllib.error
 import urllib.request
 import zipfile
 from pathlib import Path
+from urllib.parse import quote, urlparse
 
 from .base import Runtime
 
@@ -22,9 +23,9 @@ class BinaryRuntime(Runtime):
     binary at ``~/.aidem/envs/<name>/bin/<binary>``. No host toolchain
     (Rust/Go/Node) is required; the env is fully isolated.
 
-    Asset selection auto-heuristic: query the repo's latest release via the
-    GitHub API and pick the asset whose name matches ``{os}-{arch}`` (rtk uses
-    ``rtk-<arch>-<os>.<ext>``). Override with a manifest ``asset`` glob/substring.
+    Asset selection uses a pinned release via the GitHub API and picks the asset
+    whose name matches ``{os}-{arch}`` (rtk uses ``rtk-<arch>-<os>.<ext>``).
+    Override with a manifest ``asset`` substring.
     """
 
     name = "binary"
@@ -36,6 +37,20 @@ class BinaryRuntime(Runtime):
         "x86_64": "x86_64", "amd64": "x86_64",
         "x64": "x86_64",
     }
+    _DOWNLOAD_HOSTS = {
+        "github.com", "objects.githubusercontent.com", "codeload.github.com",
+        "release-assets.githubusercontent.com",
+    }
+
+    class _GithubRedirectHandler(urllib.request.HTTPRedirectHandler):
+        def redirect_request(self, req, fp, code, msg, headers, newurl):
+            new_request = super().redirect_request(req, fp, code, msg, headers, newurl)
+            if new_request is None:
+                return None
+            parsed = urlparse(new_request.full_url)
+            if parsed.scheme != "https" or parsed.hostname not in BinaryRuntime._DOWNLOAD_HOSTS:
+                raise urllib.error.URLError("binary runtime: unsafe download redirect")
+            return new_request
 
     def _platform_tokens(self) -> tuple[str, str]:
         os_tok = self._OS_TOKENS.get(platform.system(), platform.system().lower())
@@ -44,11 +59,14 @@ class BinaryRuntime(Runtime):
         return os_tok, arch_tok
 
     def _latest_release_assets(self, source: str) -> list[dict]:
-        """Assets from the latest release of the GitHub repo in ``source``."""
+        """Assets from the pinned GitHub release in ``source``."""
         owner_repo = self._owner_repo(source)
         if not owner_repo:
             return []
-        url = f"https://api.github.com/repos/{owner_repo}/releases/latest"
+        release = self.meta.get("release")
+        if not isinstance(release, str) or not release:
+            raise RuntimeError("binary runtime: --release is required")
+        url = f"https://api.github.com/repos/{owner_repo}/releases/tags/{quote(release, safe='')}"
         try:
             req = urllib.request.Request(url, headers={
                 "User-Agent": "aidem", "Accept": "application/vnd.github+json",
@@ -94,14 +112,13 @@ class BinaryRuntime(Runtime):
         # Only fetch over HTTPS from the same host the release API served
         # (github.com / objects.githubusercontent.com). Reject anything else so
         # a tampered API response can't redirect to an arbitrary host.
-        parsed = urllib.request.urlparse(url)
-        if parsed.scheme != "https" or parsed.hostname not in (
-            "github.com", "objects.githubusercontent.com", "codeload.github.com"
-        ):
+        parsed = urlparse(url)
+        if parsed.scheme != "https" or parsed.hostname not in self._DOWNLOAD_HOSTS:
             raise RuntimeError(
                 f"binary runtime: refusing to download from non-GitHub/non-HTTPS URL {url}")
         req = urllib.request.Request(url, headers={"User-Agent": "aidem"})
-        with urllib.request.urlopen(req, timeout=60) as resp, open(dest, "wb") as f:
+        opener = urllib.request.build_opener(self._GithubRedirectHandler)
+        with opener.open(req, timeout=60) as resp, open(dest, "wb") as f:
             shutil.copyfileobj(resp, f)
 
     @staticmethod
@@ -132,7 +149,22 @@ class BinaryRuntime(Runtime):
                     if self._safe_member_path(out_dir, m.name) is None:
                         continue
                     members.append(m)
-                tf.extractall(out_dir, members=members)
+                for member in members:
+                    destination = self._safe_member_path(out_dir, member.name)
+                    if destination is None:
+                        continue
+                    if member.isdir():
+                        destination.mkdir(parents=True, exist_ok=True)
+                        continue
+                    if not member.isfile():
+                        continue
+                    source = tf.extractfile(member)
+                    if source is None:
+                        continue
+                    destination.parent.mkdir(parents=True, exist_ok=True)
+                    with source, destination.open("wb") as output:
+                        shutil.copyfileobj(source, output)
+                    destination.chmod(member.mode & 0o777)
         elif archive.name.endswith(".zip"):
             with zipfile.ZipFile(archive) as zf:
                 for info in zf.infolist():
@@ -172,23 +204,31 @@ class BinaryRuntime(Runtime):
         asset named like ``checksums.txt`` / ``*.sha256`` / ``SHA256SUMS``.
         """
         checksums_text = None
+        expected = self.meta.get("sha256")
+        digest = asset.get("digest")
+        if expected is None and isinstance(digest, str) and digest.startswith("sha256:"):
+            expected = digest.removeprefix("sha256:")
         for a in assets:
             name = a.get("name", "").lower()
             if name in ("checksums.txt", "sha256sums", "sha256sums.txt") \
                or name.endswith(".sha256") or name.endswith(".sha256sums"):
                 try:
-                    buf = Path(archive.parent / a["name"])
+                    checksum_name = a["name"]
+                    if Path(checksum_name).name != checksum_name:
+                        continue
+                    buf = Path(archive.parent / checksum_name)
                     self._download(a["browser_download_url"], buf)
                     checksums_text = buf.read_text()
                     buf.unlink(missing_ok=True)
                     break
                 except Exception:
                     continue
-        if not checksums_text:
-            return None
-        expected = self._expected_hash(checksums_text, asset["name"])
+        if not expected and checksums_text:
+            expected = self._expected_hash(checksums_text, asset["name"])
         if expected is None:
-            return None
+            return False
+        if not isinstance(expected, str) or len(expected) != 64:
+            return False
         actual = hashlib.sha256(archive.read_bytes()).hexdigest()
         return actual.lower() == expected.lower()
 
@@ -217,9 +257,15 @@ class BinaryRuntime(Runtime):
                 f"binary runtime: no asset matching {self._platform_tokens()} "
                 f"for {source}. Pass --asset <glob>."
             )
+        asset_name = asset.get("name")
+        if (not isinstance(asset_name, str) or not asset_name
+                or asset_name in {".", ".."}
+                or "/" in asset_name or "\\" in asset_name
+                or Path(asset_name).name != asset_name):
+            raise RuntimeError("binary runtime: release asset name must be a plain filename")
         bin_dir = self.env_path / "bin"
         bin_dir.mkdir(parents=True, exist_ok=True)
-        archive = self.env_path / asset["name"]
+        archive = self.env_path / asset_name
         self._download(asset["browser_download_url"], archive)
         # Best-effort integrity check: if the release ships a checksums asset,
         # verify the downloaded archive against it before extracting+executing.

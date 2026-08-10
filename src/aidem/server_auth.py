@@ -16,8 +16,10 @@ from __future__ import annotations
 import base64
 import hashlib
 import json
+import os
 import secrets
 import sys
+import tempfile
 import time
 from datetime import datetime, timedelta, timezone
 from http.server import BaseHTTPRequestHandler, HTTPServer
@@ -27,7 +29,7 @@ import keyring
 
 from . import server_state
 from .paths import credentials_fallback_path
-from .server_http import ServerError, api_request
+from .server_http import ServerError, api_request, validate_server_url
 
 KEYRING_SERVICE = "aidem-server"
 ACCESS_TOKEN_MARGIN_SECONDS = 60
@@ -84,8 +86,27 @@ def _fallback_store(server_url: str, payload: dict) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     data = _fallback_load_all()
     data[server_url] = payload
-    path.write_text(json.dumps(data, indent=2) + "\n")
-    path.chmod(0o600)
+    _write_fallback(data)
+
+
+def _write_fallback(data: dict) -> None:
+    """Atomically replace the fallback credential file with mode 0600."""
+    path = credentials_fallback_path()
+    fd, tmp_name = tempfile.mkstemp(prefix=f".{path.name}.", dir=path.parent)
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as tmp:
+            os.fchmod(tmp.fileno(), 0o600)
+            json.dump(data, tmp, indent=2)
+            tmp.write("\n")
+            tmp.flush()
+            os.fsync(tmp.fileno())
+        os.replace(tmp_name, path)
+    except Exception:
+        try:
+            os.unlink(tmp_name)
+        except OSError:
+            pass
+        raise
 
 
 def store_credentials(server_url: str, payload: dict) -> None:
@@ -136,9 +157,7 @@ def clear_credentials() -> None:
         data = _fallback_load_all()
         if server_url in data:
             del data[server_url]
-            path = credentials_fallback_path()
-            path.write_text(json.dumps(data, indent=2) + "\n")
-            path.chmod(0o600)
+            _write_fallback(data)
 
 
 def credentials_payload(exchange_response: dict) -> dict:
@@ -310,7 +329,8 @@ def login_flow(server_url: str, *, device_code: bool) -> dict:
             raise ServerError("this server does not support device-code login",
                               status=None, code="device_unsupported")
         return _device_login(server_url)
-    return _browser_login(server_url, config["authorize_url"])
+    authorize_url = validate_server_url(config["authorize_url"])
+    return _browser_login(server_url, authorize_url)
 
 
 def logout_remote_best_effort() -> None:

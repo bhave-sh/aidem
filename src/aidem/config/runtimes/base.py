@@ -34,7 +34,12 @@ class Runtime:
     @property
     def binary_name(self) -> str:
         """The CLI entry-point name (from manifest 'binary')."""
-        return self.meta.get("binary", "")
+        name = self.meta.get("binary", "")
+        if not isinstance(name, str) or (name and (
+                Path(name).name != name or name in {".", ".."}
+                or name.startswith("-") or "\x00" in name)):
+            raise RuntimeError("runtime: invalid binary name in registry metadata")
+        return name
 
     def install(self, source: str | None = None) -> str:
         """Populate the env. Returns a short human status message.

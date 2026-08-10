@@ -13,7 +13,6 @@ from **user data** (writable, persistent, survive upgrades):
 | CLI code (`aidem_cli.py`, `aidem_paths.py`) | package root | yes |
 | Generators (`config/generators/*.py`) | package | yes |
 | Runtimes (`config/runtimes/*.py`) | package | yes |
-| Overlays + canonical `AGENTS.md` | `config/overlays/`, `config/AGENTS.md` | yes |
 | Tests | `tests/` | yes |
 | **Shared skills library** | `~/.aidem/skills` | user-writable |
 | **Shared rules library** | `~/.aidem/rules` | user-writable |
@@ -101,15 +100,9 @@ file under `config/runtimes/`:
 
 aidem's core stays ecosystem-agnostic: it knows "install into envs/<n>, resolve
 binary from envs/<n>/bin, exec it" — the per-ecosystem specifics live in one
-adapter file. Auto-heuristics (PyPI-wheel preference, GitHub-Releases asset
-matching, etc.) belong in the adapter, not the CLI.
-
-## Adding an overlay template
-
-Create `config/overlays/<name>/AGENTS.md` with project-type-specific
-conventions. `aidem init --template <name>` then picks it up automatically.
-(For now overlays fully replace the canonical `AGENTS.md`; a merge layer is on
-the roadmap.)
+adapter file. Runtime-specific validation (explicit PyPI overrides, pinned
+GitHub release assets, and container hardening) belongs in the adapter, not the
+CLI.
 
 ## Code style
 
